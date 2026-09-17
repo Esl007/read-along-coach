@@ -1,0 +1,16 @@
+{
+  "name": "read-along-coach",
+  "version": "0.1.0",
+  "description": "A patient voice agent that listens to early readers and ESL learners read aloud, measures fluency (WCPM) with word-level timestamps and confidence, and only helps after a genuine stall. Built on AssemblyAI Universal-Streaming.",
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "test": "node --test src/*.test.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  },
+  "license": "MIT"
+}
