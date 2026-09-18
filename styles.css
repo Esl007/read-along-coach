@@ -183,6 +183,14 @@ h2 {
   max-width: 62ch;
 }
 
+.audio-diagnostic {
+  margin: .35rem 0 0;
+  font-size: .78rem;
+  color: var(--ink-faint);
+  max-width: 62ch;
+  font-style: italic;
+}
+
 select, button {
   font-family: inherit;
   font-size: .96rem;

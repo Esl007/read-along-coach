@@ -35,26 +35,52 @@ let userStopped = false;   // true once the user has clicked Finish for the live
 // status text for the duration of a replay so it's obvious something is
 // still happening. Live-mic sessions are untouched — this only appears when
 // a replay is running.
-// ── Text-to-speech: checked progressive enhancement (defect 4) ─────────────
-// speechSynthesis.getVoices() is frequently empty until the async
-// 'voiceschanged' event fires (measured directly: 0 voices available at
-// script-load time in this browser). Calling .speak() with no voices loaded
-// is a silent no-op — nothing plays and nothing errors. So: track whether a
-// voice is actually available, update that on 'voiceschanged', and only
-// attempt speech when we know a voice exists. The on-screen $('coach')
-// message (set by the caller before speak() runs) is the primary channel
-// and works regardless of whether TTS is available.
+// ── Text-to-speech: checked progressive enhancement + zero-voice fallback ──
+// (defect 4, full rewrite)
 //
-// Voice quality: the browser default voice is frequently a harsh, robotic
-// engine (espeak-ng on many Linux setups) — exactly the "very bad and
-// robotic" complaint. Pick the best-sounding available voice instead of
-// letting the browser default, and slow the rate down: early readers and
-// ESL learners are much better served by a slower, calmer cadence than the
-// default ~1.0 rate, and it also reads as less grating in general.
+// Root cause of "no voice output ever, regardless of toggle state": the old
+// code snapshotted `speechSynthesis.getVoices().length > 0` ONCE at module
+// load into a module-level `ttsAvailable` latch. Chrome routinely reports
+// zero voices at load time and only populates the list later via the async
+// 'voiceschanged' event — which does not fire in every browser (measured:
+// does not fire in headless/no-audio-backend Chrome at all). Once the latch
+// was false, nothing but 'voiceschanged' could ever flip it back, so
+// speak() returned early FOREVER. Separately, even when a voice existed,
+// speak() attached no onerror/onstart, so a `synthesis-failed` utterance
+// (measured directly in this environment) failed completely silently —
+// indistinguishable from success.
+//
+// Fix, three parts:
+//   1. Never trust a load-time snapshot. Resolve availability lazily and
+//      keep polling getVoices() for ~3s in addition to 'voiceschanged', so a
+//      late-populating list is still picked up.
+//   2. Instrument every utterance (onstart/onend/onerror) so a failure is
+//      detected — one confirmed synthesis-failed (or a start-timeout) marks
+//      Web Speech unusable for the rest of the session and switches to the
+//      fallback below. One success is enough to keep trusting Web Speech.
+//   3. Fallback: pre-rendered per-word WAV clips (see scripts/build-voices.mjs
+//      and voices/) played via HTMLAudioElement. The vocabulary spoken here
+//      is always a single closed-set reference word (never free text), and
+//      the union of unique words across all passages + demo sessions is
+///     ~100 — small enough to commit as static assets and play with zero
+//      runtime dependency on any TTS engine or network call.
+//
+// window.__racAudio exposes the live decision state for one-eval diagnosis.
 const TTS_MUTE_KEY = 'rac-tts-muted';
-let ttsAvailable = typeof speechSynthesis !== 'undefined' && speechSynthesis.getVoices().length > 0;
-let ttsVoice = null;
 let ttsMuted = localStorage.getItem(TTS_MUTE_KEY) === '1';
+
+const racAudio = {
+  path: 'unknown',        // 'webspeech' | 'clips' | 'none'
+  webSpeechEverStarted: false,
+  webSpeechConfirmedBroken: false,
+  lastError: null,
+  voiceName: null,
+  voiceCount: 0,
+  reason: null,            // human-readable explanation when path === 'none'
+};
+window.__racAudio = racAudio;
+
+let ttsVoice = null;
 
 function pickBestVoice(voices) {
   if (!voices.length) return null;
@@ -73,21 +99,147 @@ function pickBestVoice(voices) {
 function refreshVoices() {
   if (typeof speechSynthesis === 'undefined') return;
   const voices = speechSynthesis.getVoices();
-  ttsAvailable = voices.length > 0;
+  racAudio.voiceCount = voices.length;
   ttsVoice = pickBestVoice(voices);
+  racAudio.voiceName = ttsVoice ? ttsVoice.name : null;
+  updateAudioDiagnosticUI();
 }
-refreshVoices();
+
+const webSpeechUsable = () =>
+  typeof speechSynthesis !== 'undefined' && !racAudio.webSpeechConfirmedBroken;
+
 if (typeof speechSynthesis !== 'undefined') {
+  refreshVoices();
   speechSynthesis.addEventListener('voiceschanged', refreshVoices);
+  // Belt-and-suspenders: some browsers never fire 'voiceschanged' at all, so
+  // also poll for ~3s in case the list populates without an event.
+  let pollCount = 0;
+  const pollTimer = setInterval(() => {
+    refreshVoices();
+    if (++pollCount >= 6) clearInterval(pollTimer); // 6 * 500ms = 3s
+  }, 500);
+} else {
+  racAudio.reason = 'window.speechSynthesis is not defined in this browser.';
+}
+
+// ── Fallback: pre-rendered clips ────────────────────────────────────────────
+const clipCache = new Map(); // normalized word -> HTMLAudioElement
+let clipManifest = null;     // Set of words we actually have clips for, once loaded
+
+async function loadClipManifest() {
+  try {
+    const res = await fetch('/voices/manifest.json');
+    if (!res.ok) throw new Error(`manifest fetch ${res.status}`);
+    const list = await res.json();
+    clipManifest = new Set(list);
+  } catch (err) {
+    clipManifest = new Set(); // no clips available either
+    console.warn('[read-along-coach] could not load voice clip manifest:', err);
+  }
+}
+loadClipManifest();
+
+function normalizeForClip(word) {
+  return String(word).replace(/[^\w']/g, '').toLowerCase();
+}
+
+function playClip(word) {
+  const key = normalizeForClip(word);
+  if (!clipManifest || !clipManifest.has(key)) {
+    racAudio.path = 'none';
+    racAudio.reason = `No recorded clip for "${key}" and Web Speech is unavailable in this browser.`;
+    updateAudioDiagnosticUI();
+    return;
+  }
+  let audio = clipCache.get(key);
+  if (!audio) {
+    audio = new Audio(`/voices/${encodeURIComponent(key)}.wav`);
+    clipCache.set(key, audio);
+  } else {
+    audio.currentTime = 0;
+  }
+  racAudio.path = 'clips';
+  racAudio.reason = null;
+  updateAudioDiagnosticUI();
+  audio.play().catch((err) => {
+    racAudio.path = 'none';
+    racAudio.reason = `Recorded clip playback failed: ${err.message}`;
+    updateAudioDiagnosticUI();
+  });
+}
+
+function markWebSpeechBroken(reason) {
+  racAudio.webSpeechConfirmedBroken = true;
+  racAudio.lastError = reason;
+  updateAudioDiagnosticUI();
+}
+
+// Renders a plain-language, non-technical line describing which audio path
+// is active, or why there is none — so silence reads as "here's what's
+// going on" instead of "the app is broken." See window.__racAudio for the
+// machine-readable version of the same state.
+function updateAudioDiagnosticUI() {
+  const el = document.getElementById('audioDiagnostic');
+  if (!el) return;
+  if (ttsMuted) {
+    el.textContent = 'Coach voice is muted.';
+    return;
+  }
+  if (racAudio.path === 'webspeech') {
+    el.textContent = `Spoken help is using your browser's voice${racAudio.voiceName ? ` ("${racAudio.voiceName}")` : ''}.`;
+  } else if (racAudio.path === 'clips') {
+    el.textContent = 'Spoken help is using pre-recorded word clips (your browser has no usable voices).';
+  } else if (racAudio.webSpeechConfirmedBroken && (!clipManifest || clipManifest.size === 0)) {
+    el.textContent = `No audio is available: your browser reported "${racAudio.lastError || 'no working voice'}", and the recorded-clip fallback didn't load either.`;
+  } else {
+    el.textContent = 'Audio will start once the coach speaks its first word.';
+  }
 }
 
 function speak(word, { priority = false } = {}) {
-  if (!ttsAvailable || ttsMuted) return; // on-screen coach message already covers this case
+  if (ttsMuted) return; // on-screen coach message already covers this case
+  const cleanWord = normalizeForClip(word);
+
+  if (!webSpeechUsable()) {
+    playClip(cleanWord);
+    return;
+  }
+
   if (priority) speechSynthesis.cancel(); // coach's word always wins over demo narration
   const u = new SpeechSynthesisUtterance(word);
   if (ttsVoice) u.voice = ttsVoice;
   u.rate = 0.85;  // slower — easier to follow for early readers / ESL learners
   u.pitch = 1.0;  // neutral
+
+  let started = false;
+  const startTimeout = setTimeout(() => {
+    if (!started) {
+      markWebSpeechBroken('Utterance never fired onstart within 1.5s (treated as synthesis failure).');
+      playClip(cleanWord);
+    }
+  }, 1500);
+
+  u.onstart = () => {
+    started = true;
+    clearTimeout(startTimeout);
+    racAudio.webSpeechEverStarted = true;
+    racAudio.path = 'webspeech';
+    racAudio.reason = null;
+    updateAudioDiagnosticUI();
+  };
+  u.onend = () => { clearTimeout(startTimeout); };
+  u.onerror = (e) => {
+    clearTimeout(startTimeout);
+    if (!started) {
+      // Only a failure before any audio started counts as "broken" — a
+      // cancel() from a pre-empting priority utterance also fires onerror
+      // with error 'interrupted'/'canceled' after a successful start, which
+      // is expected behavior, not a failure.
+      markWebSpeechBroken(`SpeechSynthesisUtterance error: ${e.error}`);
+      playClip(cleanWord);
+    }
+  };
+
   speechSynthesis.speak(u);
 }
 
@@ -405,8 +557,10 @@ if (muteToggle) {
   muteToggle.onchange = () => {
     ttsMuted = !muteToggle.checked;
     localStorage.setItem(TTS_MUTE_KEY, ttsMuted ? '1' : '0');
+    updateAudioDiagnosticUI();
   };
 }
+updateAudioDiagnosticUI();
 
 const narrationToggle = $('narrationToggle');
 if (narrationToggle) {

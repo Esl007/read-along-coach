@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
-    "test": "node --test src/*.test.js"
+    "test": "node --test src/*.test.js",
+    "build:voices": "node scripts/build-voices.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

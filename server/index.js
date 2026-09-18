@@ -24,6 +24,9 @@ app.get('/app.js', (_req, res) => res.sendFile(path.join(repoRoot, 'app.js')));
 app.get('/styles.css', (_req, res) => res.sendFile(path.join(repoRoot, 'styles.css')));
 app.get('/pcm-worklet.js', (_req, res) => res.sendFile(path.join(repoRoot, 'pcm-worklet.js')));
 app.use('/src', express.static(path.join(repoRoot, 'src')));
+// Pre-rendered per-word audio clips (see scripts/build-voices.mjs) — the
+// zero-browser-voice fallback for TTS (defect 4).
+app.use('/voices', express.static(path.join(repoRoot, 'voices')));
 
 // Mint a short-lived streaming token so the API key never reaches the browser.
 app.get('/api/token', async (_req, res) => {
