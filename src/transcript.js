@@ -52,6 +52,25 @@ export function createTranscript() {
       return { words: this.words(), added, end_of_turn: !!end_of_turn };
     },
 
+    /**
+     * Adapter for non-Turn-based sources (the demo replay path): each call
+     * appends one word as its own singleton "turn". Replay events are
+     * emitted exactly once, in order, and are all final by default — so
+     * there is no cumulative-replace or revision behavior to model here,
+     * just a single shared place both paths write into so render/score
+     * downstream (refresh(), finishSession()) never has to know which
+     * source produced the word.
+     */
+    addWord(word) {
+      const turn_order = `replay:${turnOrders.length}`;
+      const w = { text: word.text, start: word.start, end: word.end, confidence: word.confidence, word_is_final: word.final !== false };
+      turnOrders.push(turn_order);
+      turns.set(turn_order, [w]);
+      seenAny.add(`${turn_order}:0`);
+      if (w.word_is_final) seenFinal.add(`${turn_order}:0:final`);
+      return w;
+    },
+
     /** All words across all turns, in turn_order then in-turn order. */
     words() {
       return turnOrders.flatMap((t) => turns.get(t));

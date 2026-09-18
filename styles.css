@@ -151,6 +151,38 @@ h2 {
   color: var(--ink-faint);
 }
 
+.voice-controls {
+  display: flex;
+  align-items: center;
+  gap: .9rem .1rem;
+  flex-wrap: wrap;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  font-size: .85rem;
+  color: var(--ink-soft);
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle input[type="checkbox"] {
+  width: 1.05rem;
+  height: 1.05rem;
+  accent-color: var(--coral);
+  cursor: pointer;
+  margin: 0;
+}
+
+.demo-note {
+  margin: .6rem 0 0;
+  font-size: .82rem;
+  color: var(--ink-faint);
+  max-width: 62ch;
+}
+
 select, button {
   font-family: inherit;
   font-size: .96rem;
@@ -228,6 +260,7 @@ button#demoBtn:disabled { opacity: .45; cursor: not-allowed; }
 .w.substituted { color: var(--sub);  background: var(--sub-bg); text-decoration: underline wavy; text-decoration-thickness: 1.5px; }
 .w.skipped     { color: var(--skip); background: var(--skip-bg); text-decoration: line-through; text-decoration-thickness: 2px; }
 .w.unscorable  { color: var(--unk);  font-style: italic; }
+.w.provisional { opacity: .72; } /* still-revisable ASR guess — subtle, not an error state */
 .w.next {
   background: var(--coral);
   color: #fff;

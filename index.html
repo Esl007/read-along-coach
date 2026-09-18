@@ -29,7 +29,19 @@
         <select id="demoSelect" title="Demo replay"></select>
         <button id="demoBtn">▶ Play demo</button>
       </div>
+      <div class="divider" aria-hidden="true"></div>
+      <div class="voice-controls">
+        <label class="toggle" title="Mute the coach's spoken help">
+          <input type="checkbox" id="muteToggle" checked>
+          <span>Coach voice on</span>
+        </label>
+        <label class="toggle" title="Have a synthetic voice read the demo's words aloud in sync with playback">
+          <input type="checkbox" id="narrationToggle">
+          <span>Narrate demo (synthetic voice)</span>
+        </label>
+      </div>
     </div>
+    <p class="demo-note">Demo replay is a silent visualization of a recorded reading session — there's no audio recording to play back. Turn on "Narrate demo" above for a synthetic voice reading instead.</p>
 
     <div id="passage"></div>
     <div id="coach"></div>
