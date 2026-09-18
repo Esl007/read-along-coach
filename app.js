@@ -14,6 +14,8 @@ let ws, audioCtx, workletNode, mediaStream, replay;
 let heard = [];           // {text, confidence, start, end} accumulated finals
 let refWords = [];
 let patience, tickTimer, startedAt, helpCount = 0, lastNow = 0, activePassage = null;
+let isLiveSession = false; // true only for the live-mic path, false for replay/demo
+let userStopped = false;   // true once the user has clicked Finish for the live session
 
 function renderPassage(ops = []) {
   const verdictByRef = new Map(ops.filter(o => o.refIndex !== undefined).map(o => [o.refIndex, o.verdict]));
@@ -79,7 +81,11 @@ function finishSession(elapsedMs) {
   $('rAcc').textContent = rAcc !== null ? rAcc + '%' : '–';
   $('rHelp').textContent = helpCount;
   const sw = struggleWords(ops, refWords);
-  $('rStruggle').textContent = sw.length ? sw.join(', ') : 'none — great read! 🎉';
+  if (isLiveSession && heard.length === 0) {
+    $('rStruggle').textContent = 'No speech was detected during this session. Check your microphone permissions and that the server successfully connected to AssemblyAI (see the status line above).';
+  } else {
+    $('rStruggle').textContent = sw.length ? sw.join(', ') : 'none — great read! 🎉';
+  }
   $('report').style.display = 'block';
 
   saveSession({
@@ -96,6 +102,8 @@ function finishSession(elapsedMs) {
 // ── Live audio path ─────────────────────────────────────────────────────────
 
 async function start() {
+  isLiveSession = true;
+  userStopped = false;
   beginSession(PASSAGES[sel.value]);
   $('status').textContent = 'Connecting…';
 
@@ -119,6 +127,14 @@ async function start() {
     await startMic();
   };
   ws.onerror = () => { $('status').textContent = 'Connection error — is the server running with an API key?'; };
+  ws.onclose = (e) => {
+    // AssemblyAI may accept the connection but then close it (e.g. invalid/
+    // expired token) without ever firing onerror. If that happens before the
+    // user intentionally clicked Finish, surface it instead of failing silently.
+    if (!userStopped) {
+      $('status').textContent = 'Connection closed unexpectedly — check your microphone and API key setup.';
+    }
+  };
 }
 
 async function startMic() {
@@ -133,6 +149,7 @@ async function startMic() {
 
 function stop() {
   if (replay?.running) { replay.stop(); replay = null; finishSession(lastNow); return; }
+  userStopped = true;
   clearInterval(tickTimer);
   ws?.close(); mediaStream?.getTracks().forEach(t => t.stop()); audioCtx?.close();
   finishSession(performance.now() - startedAt);
@@ -141,6 +158,7 @@ function stop() {
 // ── Replay path (demo without a mic or API key) ─────────────────────────────
 
 function startDemo() {
+  isLiveSession = false;
   const session = SESSIONS[demoSel.value];
   const passage = PASSAGES.find(p => p.id === session.passageId);
   sel.value = PASSAGES.indexOf(passage);

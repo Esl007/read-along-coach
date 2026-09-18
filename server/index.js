@@ -1,10 +1,16 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.join(__dirname, '..');
+
+// Load .env relative to this script's location, not process.cwd() — otherwise
+// launching the server from a different working directory (e.g. a tool or
+// script that cd's elsewhere first) silently loses ASSEMBLYAI_API_KEY.
+dotenv.config({ path: path.join(repoRoot, '.env') });
+
 const app = express();
 
 // Static frontend files (index.html, app.js, pcm-worklet.js) live at the repo
