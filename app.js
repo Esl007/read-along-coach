@@ -204,9 +204,11 @@ function sparkline(values, w = 220, h = 40) {
   const max = Math.max(...values, 1), min = Math.min(...values, 0);
   const pts = values.map((v, i) =>
     `${(i / (values.length - 1)) * (w - 8) + 4},${h - 4 - ((v - min) / (max - min || 1)) * (h - 8)}`);
+  const last = pts[pts.length - 1].split(',');
   return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-label="WCPM trend">` +
-    `<polyline points="${pts.join(' ')}" fill="none" stroke="#d97706" stroke-width="2"/>` +
-    pts.map(p => `<circle cx="${p.split(',')[0]}" cy="${p.split(',')[1]}" r="2.5" fill="#d97706"/>`).join('') +
+    `<polyline points="${pts.join(' ')}" fill="none" stroke="#ff5a3c" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>` +
+    pts.slice(0, -1).map(p => `<circle cx="${p.split(',')[0]}" cy="${p.split(',')[1]}" r="2.5" fill="#ff5a3c" fill-opacity=".55"/>`).join('') +
+    `<circle cx="${last[0]}" cy="${last[1]}" r="4" fill="#1f9d7c" stroke="#fffdf8" stroke-width="1.5"/>` +
     `</svg>`;
 }
 

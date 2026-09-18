@@ -21,6 +21,7 @@ const app = express();
 // which would also expose server/, api/, package.json, .env.example…).
 app.get('/', (_req, res) => res.sendFile(path.join(repoRoot, 'index.html')));
 app.get('/app.js', (_req, res) => res.sendFile(path.join(repoRoot, 'app.js')));
+app.get('/styles.css', (_req, res) => res.sendFile(path.join(repoRoot, 'styles.css')));
 app.get('/pcm-worklet.js', (_req, res) => res.sendFile(path.join(repoRoot, 'pcm-worklet.js')));
 app.use('/src', express.static(path.join(repoRoot, 'src')));
 
