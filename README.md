@@ -36,6 +36,22 @@ mode (`runFast`) used by `src/replay.test.js`.
 Every finished session (live or replay) is saved to localStorage; a Progress section
 under the report shows past sessions and an inline SVG sparkline of WCPM over time.
 
+## Deploy
+Deploys on [Vercel](https://vercel.com) with **zero build config**:
+- Static frontend (`index.html`, `app.js`, `pcm-worklet.js`, `src/`) lives at the
+  repo root, so Vercel's zero-config static serving picks it up as-is — no
+  `vercel.json` needed.
+- `api/token.js` is a dependency-free Vercel Node serverless function (plain
+  `fetch`, no Express) that mints the AssemblyAI streaming token. Any file
+  under `api/*.js` becomes a serverless endpoint automatically.
+- Set `ASSEMBLYAI_API_KEY` in the Vercel project's **Settings → Environment
+  Variables** dashboard — it is read at runtime and is never committed to
+  the repo.
+
+Locally, `server/index.js` (Express) serves the same root-level static files
+and exposes the same `/api/token` route for `npm start` — so local dev and
+the Vercel deployment share identical frontend code paths.
+
 ## Architecture
 ```
 mic → AudioWorklet (16-bit PCM) → AssemblyAI Universal-Streaming (WebSocket)
@@ -51,6 +67,6 @@ mic → AudioWorklet (16-bit PCM) → AssemblyAI Universal-Streaming (WebSocket)
 - **D3–4** ✅ replay/simulation mode: bundled session scripts exercise the patience machine end-to-end without a mic
 - **D5–6** ✅ fluency trend across sessions (localStorage + sparkline); per-word replay
 - **D7–8** ✅ ESL persona pass (careful-read demo script on the interview passage)
-- **D9–10** deploy (Vercel/Render), record demo video: halting read → patient help → dashboard
+- **D9–10** ✅ deploy (Vercel, zero-config); record demo video: halting read → patient help → dashboard
 - **D11–12** slides, submission copy, buffer
 - **D13** submit early
