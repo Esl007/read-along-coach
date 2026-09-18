@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runFast, createReplay } from './replay.js';
-import { align, nextExpectedIndex } from './aligner.js';
+import { align, alignPrefix, nextExpectedIndex } from './aligner.js';
 import { createPatience, State } from './patience.js';
 import { PASSAGES, words } from './passages.js';
 import { SESSIONS } from './sessions/index.js';
@@ -19,7 +19,13 @@ function runSession(session) {
     },
     onTick(now) {
       if (patience.tick(now) === State.STALLED) {
-        const idx = nextExpectedIndex(align(ref, heard));
+        // Mirror app.js: STALLED help must be computed against the PREFIX
+        // alignment of the partial transcript-so-far, not the global
+        // alignment — global align() smears a short partial heard[] toward
+        // the end of the reference (defect 1), which here manifests as
+        // nextExpectedIndex landing near/at ref.length and the `idx <
+        // ref.length` guard failing, so no help ever fires.
+        const idx = nextExpectedIndex(alignPrefix(ref, heard));
         if (idx < ref.length) { helps.push({ idx, word: ref[idx], now }); patience.helped(now); }
       }
     },
@@ -130,7 +136,9 @@ function runRealTime(session, { tickMs = 250 / SCALE, throttleFactor = 1 } = {})
       },
       onTick(now) {
         if (patience.tick(now) === State.STALLED) {
-          const idx = nextExpectedIndex(align(ref, heard));
+          // Same fix as runSession() above: use prefix alignment for the
+          // live/in-progress STALLED check.
+          const idx = nextExpectedIndex(alignPrefix(ref, heard));
           if (idx < ref.length) { helps.push({ idx, word: ref[idx], now }); patience.helped(now); }
         }
       },

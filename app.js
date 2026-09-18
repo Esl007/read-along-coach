@@ -1,7 +1,8 @@
 import { PASSAGES, words } from '/src/passages.js';
-import { align, wcpm, struggleWords, nextExpectedIndex } from '/src/aligner.js';
+import { align, alignPrefix, wcpm, struggleWords, nextExpectedIndex } from '/src/aligner.js';
 import { createPatience, State } from '/src/patience.js';
 import { createReplay } from '/src/replay.js';
+import { createTranscript } from '/src/transcript.js';
 import { SESSIONS } from '/src/sessions/index.js';
 
 const $ = (id) => document.getElementById(id);
@@ -13,6 +14,7 @@ SESSIONS.forEach((s, i) => demoSel.add(new Option(s.title, i)));
 let ws, audioCtx, workletNode, mediaStream, replay;
 let heard = [];           // {text, confidence, start, end} accumulated finals
 let refWords = [];
+let transcript;           // live-mic only: turn-replacement accumulator (defect 2)
 let patience, tickTimer, startedAt, helpCount = 0, lastNow = 0, activePassage = null;
 let isLiveSession = false; // true only for the live-mic path, false for replay/demo
 let userStopped = false;   // true once the user has clicked Finish for the live session
@@ -23,6 +25,26 @@ let userStopped = false;   // true once the user has clicked Finish for the live
 // status text for the duration of a replay so it's obvious something is
 // still happening. Live-mic sessions are untouched — this only appears when
 // a replay is running.
+// ── Text-to-speech: checked progressive enhancement (defect 4) ─────────────
+// speechSynthesis.getVoices() is frequently empty until the async
+// 'voiceschanged' event fires (measured directly: 0 voices available at
+// script-load time in this browser). Calling .speak() with no voices loaded
+// is a silent no-op — nothing plays and nothing errors. So: track whether a
+// voice is actually available, update that on 'voiceschanged', and only
+// attempt speech when we know a voice exists. The on-screen $('coach')
+// message (set by the caller before speak() runs) is the primary channel
+// and works regardless of whether TTS is available.
+let ttsAvailable = typeof speechSynthesis !== 'undefined' && speechSynthesis.getVoices().length > 0;
+if (typeof speechSynthesis !== 'undefined') {
+  speechSynthesis.addEventListener('voiceschanged', () => {
+    ttsAvailable = speechSynthesis.getVoices().length > 0;
+  });
+}
+function speak(word) {
+  if (!ttsAvailable) return; // on-screen coach message already covers this case
+  speechSynthesis.speak(new SpeechSynthesisUtterance(word));
+}
+
 function setStatus(text, { playing = false } = {}) {
   $('status').innerHTML = playing
     ? `<span class="playing"><span class="dot"></span>▶ Playing…</span> ${text}`
@@ -30,15 +52,23 @@ function setStatus(text, { playing = false } = {}) {
 }
 
 function renderPassage(ops = []) {
-  const verdictByRef = new Map(ops.filter(o => o.refIndex !== undefined).map(o => [o.refIndex, o.verdict]));
+  // 'pending' (not-yet-reached) ops render with no verdict class at all —
+  // neutral/unstyled, never the struck-through 'skipped' look.
+  const verdictByRef = new Map(
+    ops.filter(o => o.refIndex !== undefined && o.verdict !== 'pending').map(o => [o.refIndex, o.verdict])
+  );
   const nextIdx = nextExpectedIndex(ops);
   $('passage').innerHTML = refWords
     .map((w, i) => `<span class="w ${verdictByRef.get(i) || ''} ${i === nextIdx ? 'next' : ''}">${w}</span>`)
     .join(' ');
 }
 
+// Live rendering/progress MUST use alignPrefix (semi-global, free end-gap),
+// not the global align() — see src/aligner.js. align() forces the traceback
+// to end at the last reference word, which drags the highlight to the end of
+// the passage on partial transcripts (defect 1).
 function refresh() {
-  const ops = align(refWords, heard);
+  const ops = alignPrefix(refWords, heard);
   renderPassage(ops);
   return ops;
 }
@@ -49,6 +79,7 @@ function beginSession(passage) {
   activePassage = passage;
   refWords = words(passage);
   heard = []; helpCount = 0; lastNow = 0;
+  transcript = createTranscript();
   patience = createPatience();
   renderPassage();
   $('report').style.display = 'none';
@@ -67,12 +98,14 @@ function onTick(now) {
   const s = patience.tick(now);
   if (s === State.WORKING) setStatus('Take your time… 💪', { playing: !isLiveSession });
   else if (s === State.STALLED) {
-    const ops = align(refWords, heard);
+    const ops = alignPrefix(refWords, heard);
     const idx = nextExpectedIndex(ops);
     if (idx < refWords.length) {
       const word = refWords[idx].replace(/[^\w']/g, '');
+      // The on-screen coach message is the primary, always-present channel;
+      // TTS is a checked progressive enhancement layered on top (defect 4).
       $('coach').textContent = `The next word is “${word}” — you've got this.`;
-      speechSynthesis.speak(new SpeechSynthesisUtterance(word));
+      speak(word);
       helpCount++;
       patience.helped(now);
       setTimeout(() => { $('coach').textContent = ''; }, 6500);
@@ -84,8 +117,13 @@ function finishSession(elapsedMs) {
   $('startBtn').disabled = false; $('demoBtn').disabled = false; $('stopBtn').disabled = true;
   $('status').textContent = 'Session finished.';
 
+  // End-of-session scoring also uses the prefix alignment (via refresh()):
+  // a reader who stops halfway sees the unread tail as 'pending' ("not
+  // reached"), never as 'skipped'. Words genuinely skipped within the span
+  // actually read still count as 'skipped'. 'pending' is excluded from every
+  // denominator below (defect 1).
   const ops = refresh();
-  const scoreable = ops.filter(o => o.verdict !== 'unscorable' && o.op !== 'ins');
+  const scoreable = ops.filter(o => o.verdict !== 'unscorable' && o.verdict !== 'pending' && o.op !== 'ins');
   const correct = ops.filter(o => o.verdict === 'correct').length;
   const rWcpm = wcpm(ops, elapsedMs);
   const rAcc = scoreable.length ? Math.round(100 * correct / scoreable.length) : null;
@@ -100,14 +138,19 @@ function finishSession(elapsedMs) {
   }
   $('report').style.display = 'block';
 
-  saveSession({
-    date: new Date().toISOString(),
-    passageId: activePassage.id,
-    wcpm: rWcpm,
-    accuracy: rAcc,
-    helps: helpCount,
-    struggleWords: sw,
-  });
+  // Don't persist junk sessions: a zero-word/no-speech run has nothing to
+  // show in the progress table or WCPM sparkline and only pollutes them
+  // (defect 5).
+  if (correct > 0) {
+    saveSession({
+      date: new Date().toISOString(),
+      passageId: activePassage.id,
+      wcpm: rWcpm,
+      accuracy: rAcc,
+      helps: helpCount,
+      struggleWords: sw,
+    });
+  }
   renderHistory();
 }
 
@@ -120,14 +163,31 @@ async function start() {
   $('status').textContent = 'Connecting…';
 
   const { token } = await (await fetch('/api/token')).json();
-  ws = new WebSocket(`wss://streaming.assemblyai.com/v3/ws?sample_rate=16000&format_turns=false&token=${token}`);
+
+  // Request a 16kHz AudioContext, but the requested rate is only advisory —
+  // browsers (notably Firefox/Safari) may silently ignore it and hand back
+  // their own default (measured 48000 here). If we declared 16000 to
+  // AssemblyAI while actually sending 48kHz PCM, transcription would be
+  // silently garbage with no error surfaced anywhere. So: create the context
+  // first, read back its ACTUAL sampleRate, and use that value — never the
+  // requested one — for both the mic pipeline and the WebSocket URL (defect 3).
+  mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1 } });
+  audioCtx = new AudioContext({ sampleRate: 16000 });
+  const actualSampleRate = audioCtx.sampleRate;
+
+  ws = new WebSocket(`wss://streaming.assemblyai.com/v3/ws?sample_rate=${actualSampleRate}&format_turns=false&token=${token}`);
 
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     if (msg.type === 'Turn' && msg.words) {
       const now = performance.now() - startedAt;
-      for (const w of msg.words) {
-        // partials feed the patience machine as "effort"; only finals are scored
+      // AssemblyAI v3 Turn.words is CUMULATIVE — each message re-sends every
+      // word currently in the turn (finals + a revisable non-final tail),
+      // not just new words. `transcript` replaces (never appends) per
+      // turn_order and hands back only the genuinely new/newly-final words,
+      // so each real word reaches the shared pipeline exactly once (defect 2).
+      const { added } = transcript.applyTurn(msg);
+      for (const w of added) {
         onWordEvent({ text: w.text, confidence: w.confidence ?? 0.9, start: w.start, end: w.end, final: !!w.word_is_final }, now);
       }
     }
@@ -150,8 +210,8 @@ async function start() {
 }
 
 async function startMic() {
-  mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1 } });
-  audioCtx = new AudioContext({ sampleRate: 16000 });
+  // mediaStream and audioCtx are already created in start() so their actual
+  // sampleRate could be read back before opening the WebSocket (defect 3).
   await audioCtx.audioWorklet.addModule('/pcm-worklet.js');
   const src = audioCtx.createMediaStreamSource(mediaStream);
   workletNode = new AudioWorkletNode(audioCtx, 'pcm-writer');
