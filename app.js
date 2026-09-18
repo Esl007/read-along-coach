@@ -17,6 +17,18 @@ let patience, tickTimer, startedAt, helpCount = 0, lastNow = 0, activePassage = 
 let isLiveSession = false; // true only for the live-mic path, false for replay/demo
 let userStopped = false;   // true once the user has clicked Finish for the live session
 
+// Real-time demo replay used to give no visible sign of activity beyond a
+// static status line for up to ~20-30 real seconds, which reads as "frozen"
+// to anyone watching. Show a small pulsing "▶ Playing…" badge alongside the
+// status text for the duration of a replay so it's obvious something is
+// still happening. Live-mic sessions are untouched — this only appears when
+// a replay is running.
+function setStatus(text, { playing = false } = {}) {
+  $('status').innerHTML = playing
+    ? `<span class="playing"><span class="dot"></span>▶ Playing…</span> ${text}`
+    : text;
+}
+
 function renderPassage(ops = []) {
   const verdictByRef = new Map(ops.filter(o => o.refIndex !== undefined).map(o => [o.refIndex, o.verdict]));
   const nextIdx = nextExpectedIndex(ops);
@@ -53,7 +65,7 @@ function onWordEvent(word, now) {
 function onTick(now) {
   lastNow = Math.max(lastNow, now);
   const s = patience.tick(now);
-  if (s === State.WORKING) $('status').textContent = 'Take your time… 💪';
+  if (s === State.WORKING) setStatus('Take your time… 💪', { playing: !isLiveSession });
   else if (s === State.STALLED) {
     const ops = align(refWords, heard);
     const idx = nextExpectedIndex(ops);
@@ -63,9 +75,9 @@ function onTick(now) {
       speechSynthesis.speak(new SpeechSynthesisUtterance(word));
       helpCount++;
       patience.helped(now);
-      setTimeout(() => { $('coach').textContent = ''; }, 4000);
+      setTimeout(() => { $('coach').textContent = ''; }, 6500);
     }
-  } else $('status').textContent = 'Listening…';
+  } else setStatus('Listening…', { playing: !isLiveSession });
 }
 
 function finishSession(elapsedMs) {
@@ -163,7 +175,7 @@ function startDemo() {
   const passage = PASSAGES.find(p => p.id === session.passageId);
   sel.value = PASSAGES.indexOf(passage);
   beginSession(passage);
-  $('status').textContent = `Replaying “${session.title}”…`;
+  setStatus(`Replaying “${session.title}”…`, { playing: true });
   replay = createReplay(session.events, {
     onWord: onWordEvent,
     onTick,
