@@ -1,13 +1,34 @@
 #!/usr/bin/env python3
-"""Render one clip per vocabulary word with Kokoro-82M (neural TTS, fully local).
+"""Render clips with Kokoro-82M (neural TTS, fully local).
 
-This is the audio engine behind `npm run build:voices`. It is invoked by
-scripts/build-voices.mjs, which owns the vocabulary derivation (it has to —
-the word list comes from ESM modules src/passages.js and src/sessions/) and
-owns the voices/manifest.json contract. This script's job is narrow:
+This is the audio engine behind `npm run build:voices` and
+`npm run build:phrases`. It is invoked by scripts/build-voices.mjs and
+scripts/build-phrases.mjs, which own the text derivation (they have to — the
+word list and the phrase grouping come from ESM modules src/passages.js,
+src/sessions/ and src/phrases.js) and own their respective manifest
+contracts. This script's job is narrow:
 
-    stdin  <- {"words": [...], "outDir": "...", ...}
+    WORD MODE (build-voices.mjs)
+    stdin  <- {"words": ["cat", ...], "outDir": "...", ...}
     stdout -> {"clips": [{"word","file","ext","seconds","bytes",...}], ...}
+
+    PHRASE MODE (build-phrases.mjs)
+    stdin  <- {"phrases": [{"id": "s-0", "text": "The cat sat"}, ...],
+               "outDir": "...", ...}
+    stdout -> {"clips": [{"id","text","file","ext","seconds","bytes",...}], ...}
+
+Exactly one of "words" / "phrases" must be present. The two modes differ only
+in (a) how the output filename is derived — the word itself vs. the phrase id —
+and (b) how the text handed to the model is punctuated. They deliberately
+share the voice, speed, sample rate and DSP so that a word clip and a phrase
+clip are audibly the same speaker at the same level.
+
+WHY PHRASE MODE EXISTS
+    A word synthesized alone gets the isolated pronunciation and a falling
+    terminal contour; "the" becomes /ðiː/ with a full stop. Concatenating such
+    clips cannot produce a sentence, because the prosody was never there to
+    recover. The synthesis *unit* has to be the phrase. See the header of
+    src/phrases.js for the full argument and for the grouping rules.
 
 WHY KOKORO
     hexgrad/Kokoro-82M, Apache-2.0 weights. Three reasons it beats the
@@ -197,9 +218,51 @@ FORMATS = {
 }
 
 
+# Terminal punctuation that already gives the model a complete contour, so we
+# must not append another period on top of it.
+TERMINAL_PUNCT = ".!?,;:…—"
+
+
+def build_items(req):
+    """Normalise either request shape into a list of render items.
+
+    An item is (key, model_text, meta) where `key` is the output basename and
+    `meta` is the extra fields to echo back in that clip's report entry.
+    """
+    has_words = "words" in req
+    has_phrases = "phrases" in req
+    if has_words == has_phrases:
+        raise SystemExit(
+            'request must contain exactly one of "words" or "phrases" '
+            f"(got words={has_words}, phrases={has_phrases})"
+        )
+
+    items = []
+    if has_words:
+        for word in req["words"]:
+            # A trailing period gives the model a complete declarative contour.
+            # Bare tokens often come out with a trailing rise or a clipped tail,
+            # which reads as a question rather than "this is the word".
+            items.append((word, f"{word}.", {"word": word}))
+        return "word", items
+
+    for p in req["phrases"]:
+        pid, text = p["id"], str(p["text"]).strip()
+        if not pid:
+            raise SystemExit("phrase with empty id")
+        if not text:
+            raise SystemExit(f"phrase {pid!r} has empty text")
+        # ONE utterance, punctuation preserved: the phrase text comes straight
+        # from the passage, so it usually already carries the comma or period
+        # that shapes its contour. Only a bare tail gets a period added, and
+        # for the same reason as in word mode.
+        model_text = text if text[-1] in TERMINAL_PUNCT else f"{text}."
+        items.append((pid, model_text, {"id": pid, "text": text}))
+    return "phrase", items
+
+
 def main():
     req = json.load(sys.stdin)
-    words = req["words"]
     out_dir = req["outDir"]
     voice = req.get("voice", "af_heart")
     speed = float(req.get("speed", 0.85))
@@ -209,6 +272,8 @@ def main():
     if ext not in FORMATS:
         raise SystemExit(f"unsupported ext {ext!r}; choose one of {sorted(FORMATS)}")
     sf_format, sf_subtype = FORMATS[ext]
+
+    mode, items = build_items(req)
 
     espeak_note = resolve_espeak()
     log(f"[synth] phonemiser: {espeak_note}")
@@ -227,12 +292,12 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     clips, failures = [], []
 
-    for i, word in enumerate(words, 1):
-        # A trailing period gives the model a complete declarative contour.
-        # Bare tokens often come out with a trailing rise or a clipped tail,
-        # which reads as a question rather than "this is the word".
-        text = f"{word}."
+    for i, (key, text, meta) in enumerate(items, 1):
         try:
+            # KPipeline may split long text into several chunks; concatenating
+            # them is not the thing src/phrases.js warns about, because the
+            # split happened *inside* one model call with one prosodic plan.
+            # What matters is that we never call the model per word.
             chunks = [
                 np.asarray(res.audio, dtype=np.float32).reshape(-1)
                 for res in pipeline(text, voice=voice, speed=speed)
@@ -245,30 +310,32 @@ def main():
             if y.size == 0:
                 raise RuntimeError("clip was empty after silence trim")
 
-            path = os.path.join(out_dir, f"{word}.{ext}")
+            path = os.path.join(out_dir, f"{key}.{ext}")
             sf.write(path, y, sr, format=sf_format, subtype=sf_subtype)
             clips.append(
                 {
-                    "word": word,
-                    "file": f"{word}.{ext}",
+                    **meta,
+                    "file": f"{key}.{ext}",
                     "ext": ext,
                     "seconds": round(y.size / sr, 3),
                     "rawSeconds": round(raw.size / sr, 3),
                     "bytes": os.path.getsize(path),
                     "sampleRate": sr,
+                    "chunks": len(chunks),
                 }
             )
-        except Exception as e:  # noqa: BLE001 - one bad word must not kill the build
-            log(f"[synth] FAILED {word!r}: {e}")
-            failures.append({"word": word, "error": str(e)})
+        except Exception as e:  # noqa: BLE001 - one bad item must not kill the build
+            log(f"[synth] FAILED {key!r}: {e}")
+            failures.append({**meta, "error": str(e)})
 
-        if i % 10 == 0 or i == len(words):
-            log(f"[synth] {i}/{len(words)}")
+        if i % 10 == 0 or i == len(items):
+            log(f"[synth] {i}/{len(items)}")
 
     json.dump(
         {
             "model": "hexgrad/Kokoro-82M",
             "license": "Apache-2.0",
+            "mode": mode,
             "voice": voice,
             "langCode": lang_code,
             "speed": speed,
