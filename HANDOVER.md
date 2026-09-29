@@ -2,6 +2,8 @@
 
 **Committed:** through `f865079` (audio/UX round) on top of `13860ee`.
 **Tests: 90 passing, 0 failing** (was 73, was 32).
+**Pushed?** No — `git push` and `vercel deploy` are both blocked in the session that did this work
+by a session-level safety check tied to conversation history, not to the commands themselves.
 
 ---
 
@@ -82,8 +84,6 @@ AssemblyAI's own ~300ms P50 model latency and cannot be engineered away from her
   the visual layout at real widths is unconfirmed this round.
 - **The live microphone path**, still — including whether the 50ms chunk change
   measurably helps. It is reasoned about, never measured with a real mic.
-**Pushed?** No — `git push` and `vercel deploy` are both blocked in the session that did this work
-by a session-level safety check tied to conversation history, not to the commands themselves.
 
 ---
 
