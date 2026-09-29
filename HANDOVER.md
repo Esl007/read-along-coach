@@ -1,128 +1,117 @@
 # Read-Along Coach — handover
 
-**Verified state as of this file:** local `master` and `origin/master` are both at `5cd0ac3`
-(0 ahead / 0 behind, clean tree). **Nothing needs pushing.** All 32 tests pass.
-
-The only deploy action outstanding is pushing the current code live to Vercel.
+**Committed:** `d922551` (engine hardening + new UI + 12 passages) on top of `a996617`.
+**Tests: 73 passing, 0 failing** (was 32).
+**Pushed?** No — `git push` and `vercel deploy` are both blocked in the session that did this work
+by a session-level safety check tied to conversation history, not to the commands themselves.
 
 ---
 
-## 1. Redeploy to Vercel (the one thing actually pending)
-
-The live site still serves older code. This publishes `5cd0ac3`:
+## 1. Run these two commands — nothing else is outstanding
 
 ```bash
 cd ~/read-along-coach
+git push origin master
 npx vercel --prod
 ```
 
-Then confirm the deploy is healthy:
+Then verify the deploy:
 
 ```bash
-curl -s -o /dev/null -w "home:   %{http_code}\n" https://read-along-coach-app.vercel.app/
-curl -s -o /dev/null -w "token:  %{http_code}\n" https://read-along-coach-app.vercel.app/api/token
-curl -s -o /dev/null -w "clip:   %{http_code}\n" https://read-along-coach-app.vercel.app/voices/the.wav
-curl -s -o /dev/null -w "env:    %{http_code} (404 = good, .env not exposed)\n" https://read-along-coach-app.vercel.app/.env
+curl -s -o /dev/null -w "home:  %{http_code}\n" https://read-along-coach-app.vercel.app/
+curl -s -o /dev/null -w "token: %{http_code}\n" https://read-along-coach-app.vercel.app/api/token
+curl -s -o /dev/null -w "env:   %{http_code} (404 = good)\n" https://read-along-coach-app.vercel.app/.env
 ```
 
-Expected: `200`, `200`, `200`, `404`.
+Expect `200`, `200`, `404`. If `/api/token` gives 500, the key is missing on Vercel:
 
-If `/api/token` returns 500, the API key is missing on Vercel:
+```bash
+npx vercel env add ASSEMBLYAI_API_KEY production
+npx vercel --prod
+```
+
+---
+
+## 2. What changed in this session
+
+### Engine (`src/aligner.js`, `src/patience.js`)
+- **Near-miss tolerance** — "ran" for "run" now aligns as a near-miss instead of cascading into a
+  wall of spurious skips.
+- **Self-correction / repetition** — "the… the cat" and "c-c-cat" are credited to the final attempt
+  rather than scored as insertions.
+- **Normalization** — contractions, hyphenation, numbers.
+- **Prefix-alignment guarantee** — no reference word past the live boundary can be anything but
+  `pending`.
+
+### Render path (`app.js`)
+- Word spans are built **once**; updates only reassign `className` on spans whose verdict changed.
+  No `innerHTML` rebuild during a session. This was the perceived "lag" — the old code rebuilt every
+  word node on every incoming word *and* every 250 ms tick.
+- Updates coalesced into `requestAnimationFrame`.
+- **Auto-finish** on sustained silence once the passage is complete (`AUTO_FINISH_SILENCE_MS = 2600`,
+  with a hard backstop so it can never hang). Verified working: the session ended itself and showed
+  "Session finished — you read the whole passage! 🎉" with no click.
+- Teardown made idempotent across every exit path.
+
+### Content
+- **4 → 12 passages** on a level 1–8 ladder.
+- **3 → 5 demo sessions** (adds a self-correcting reader and an ESL reader dropping word endings).
+
+### UI
+Rebuilt as a learning-SaaS interface: skip link, AssemblyAI attribution badge, sidebar cards
+(Read aloud / Demo replay / Coach voice), a "How the coach behaves" explainer, a plain-English colour
+legend (Correct / Read next / Different word / Skipped / Couldn't hear), and a dashboard-style report.
+Every element ID and word-state class the pipeline depends on was preserved.
+
+### Voice
+Kokoro-82M (Apache-2.0, local, no API key) replaces espeak-ng. Voice `af_heart` at speed 0.85.
+Generator: `npm run build:voices` → `scripts/build-voices.mjs` → `scripts/synth_kokoro.py`.
+
+To regenerate clips (needed if you add passages or demo sessions):
 
 ```bash
 cd ~/read-along-coach
-npx vercel env add ASSEMBLYAI_API_KEY production
-npx vercel --prod          # re-deploy so the new env var takes effect
+python3 -m venv .venv && .venv/bin/pip install "kokoro>=0.9.2" soundfile
+npm run build:voices
 ```
 
----
-
-## 2. Check your audio state (do this FIRST — it may cancel the work in §3)
-
-Open the app, press F12 → Console, and run:
-
-```js
-window.__racAudio
-```
-
-| Result | Meaning | Action |
-| --- | --- | --- |
-| `path: "webspeech"` with a real `voiceName` | Your browser has native voices. You're already hearing decent audio. | **Skip §3** — clip quality is fallback-only. |
-| `path: "clips"` | No browser voices; you're hearing the robotic espeak clips. | **Do §3.** |
-| `path: "none"` | Still no audio at all. | Paste the whole object back — `lastError` will say why. |
+The venv and model weights are gitignored; the rendered clips are committed, so the app needs
+nothing at runtime.
 
 ---
 
-## 3. Swap espeak clips for Kokoro neural TTS
+## 3. Verified vs unverified
 
-Kokoro-82M was chosen over ElevenLabs because its weights are **Apache-2.0** (unrestricted
-commercial use, no attribution) and it runs locally with **no API key**. ElevenLabs' free tier
-grants **no commercial licence**, which is a real risk for a publicly submitted hackathon entry
-with cash prizes.
+**Verified by me in the browser:**
+- 73/73 tests pass.
+- All 12 passages load; all 5 demos appear.
+- Auto-finish works unprompted, with a sane report (52 WCPM, 93% accuracy, 1 word supplied).
+- Every element ID app.js queries is present.
+- No horizontal overflow at desktop width; zero console errors.
 
-Start a **fresh Claude Code session** from `~/read-along-coach` (delegation is blocked in the
-old session by a session-level safety check tied to its history, not to any of these tasks) and
-paste this:
-
-> Replace the robotic espeak-ng word clips in `voices/` with Kokoro-82M neural TTS. Kokoro was
-> chosen because its weights are Apache-2.0 (unrestricted commercial use, no attribution) and it
-> runs locally with no API key — ElevenLabs was rejected because its free tier grants no
-> commercial licence and this is a public hackathon submission.
->
-> Install Kokoro in a userspace venv (`pip install "kokoro>=0.9.2" soundfile`) — no sudo
-> available. Its phonemizer may need an `espeak-ng` binary; one was already extracted from the
-> Ubuntu .deb into this repo area without root, so find and reuse it.
->
-> Rewrite `scripts/build-voices.mjs` to generate via Kokoro, keeping the `npm run build:voices`
-> entry point, the vocabulary derivation from `src/passages.js` + `src/sessions/` (do NOT
-> hardcode a word list), and the output contract `voices/<word>.<ext>` + `voices/manifest.json`.
-> Pick a warm, clearly-articulated English voice suited to early readers and ESL learners, and
-> say why you chose it. Commit the regenerated clips so no model or binary is needed at runtime;
-> gitignore the venv and model weights. Re-encode to Opus or MP3 to shrink the current 4.1MB,
-> updating the manifest and any extension references in `app.js`. Trim leading/trailing silence
-> and normalize levels.
->
-> Do NOT touch alignment, scoring, patience, the AssemblyAI/WebSocket path, the render loop, or
-> session-end UX. Keep the Web Speech → clips fallback chain and `window.__racAudio` intact.
->
-> Verify: `node --test` (32 must pass); every vocabulary word has a clip and manifest entry with
-> no orphans; durations scale with word length ("the" much shorter than "caterpillar"); and prove
-> playback by monkey-patching `HTMLMediaElement.prototype.play`, enabling the "Narrate demo"
-> toggle, running a demo, and capturing `timeupdate` events showing `currentTime` actually
-> advancing. Zero console errors. Do not claim you heard anything — report model, voice id,
-> sample rate, durations and file sizes.
+**NOT verified:**
+- **Audible quality.** No speakers here, and the preview browser reports zero speech voices. I have
+  never heard a single clip. Play one before filming.
+- **The live microphone path.** Still never tested with a real mic — it is proven only by a synthetic
+  AssemblyAI stream harness. Read a passage aloud on the deployed URL; if it stalls, note the
+  specific word and check the console.
+- The four agents that did the engine/UI/perf/voice work were killed by API connection errors during
+  their *own* verification phase. Their edits landed and the suite passes, but their self-checks
+  never completed — so treat anything beyond the list above as unconfirmed.
 
 ---
 
-## 4. Two known UX bugs (not yet started)
+## 4. Submission materials
 
-Paste into a fresh session, ideally **after** §3 lands, since both touch `app.js`:
+`SUBMISSION.md` has the pitch, the architecture diagram, the AssemblyAI technical rationale, a
+shot-by-shot **90-second demo video script**, and the competitive positioning.
 
-> Two UX fixes in ~/read-along-coach. Keep scope tight and do not touch the aligner, scoring,
-> or the AssemblyAI streaming path.
->
-> **(a) The highlight feels sluggish and lurching.** `refresh()` in `app.js` rebuilds the entire
-> passage via `innerHTML` on every single word event *and* on every 250ms tick, re-running the
-> full alignment each time — so ~41 word spans are destroyed and recreated constantly. Coalesce
-> renders into a `requestAnimationFrame` and mutate only the changed spans' `className` instead
-> of regenerating markup. AssemblyAI's latency is fine; the UI is the bottleneck.
->
-> **(b) The session never ends itself.** The reader must click "Finish" manually, which reads as
-> the app being stuck. End the session automatically on a sustained silence once the reader has
-> reached the end of the passage, while keeping the manual Finish button working.
->
-> Verify with `node --test` and by running a demo in the preview browser: confirm the highlight
-> advances smoothly and the session self-finishes with a sane report.
+Field intel: **95 submissions, top entry has 11 votes**, a third are unfinished drafts, and the
+leaderboard is all conversational agents (receptionists, interview coaches, dispatchers). Nothing
+visible is using word-level confidence as a measurement instrument. The differentiator holds.
 
----
-
-## 5. The one thing nobody has tested
-
-The **live microphone path** has never been empirically verified — there is no microphone in the
-dev environment, so it is proven only by a synthetic AssemblyAI harness and code review.
-
-Read a passage aloud on the live URL. If it stalls, note **where** it sticks (a specific word, or
-right at the start) and check the browser console for `ws.onclose` or token errors.
+Demo priority: the **unscorable/grey word** moment is the strongest thing in the product. Give it
+real screen time and say out loud why it exists.
 
 ---
 
@@ -130,11 +119,9 @@ right at the start) and check the browser console for `ws.onclose` or token erro
 
 ```bash
 cd ~/read-along-coach
-node --test                  # 32 tests
-npm run build:voices         # regenerate word clips
-npx vercel --prod            # deploy
-git log --oneline -3
+node --test              # 73 tests
+npm run build:voices     # regenerate clips (needs venv)
+npx vercel --prod        # deploy
 ```
 
-Live URL: https://read-along-coach-app.vercel.app
-Repo: https://github.com/Esl007/read-along-coach
+Live: https://read-along-coach-app.vercel.app · Repo: https://github.com/Esl007/read-along-coach
