@@ -2,3 +2,19 @@ node_modules/
 .env
 .vercel
 .env*.local
+
+# Build-time-only Python env for scripts/build-voices.mjs (Kokoro-82M TTS).
+# The rendered clips under voices/ ARE committed, so the app needs none of
+# this at runtime — see the header of scripts/build-voices.mjs to recreate it.
+.venv/
+__pycache__/
+*.pyc
+
+# Neural TTS model weights, downloaded on demand from HuggingFace at build
+# time. Hundreds of MB; never commit.
+.cache/huggingface/
+models/
+*.safetensors
+*.onnx
+*.pt
+*.pth
