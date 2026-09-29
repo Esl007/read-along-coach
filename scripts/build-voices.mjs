@@ -63,6 +63,7 @@
 // Usage: npm run build:voices [-- --voice=af_heart --speed=0.85 --format=wav]
 
 import { spawn } from 'node:child_process';
+import { extractLastJsonObject } from './synth-report.mjs';
 import { mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -130,11 +131,19 @@ function runSynth(request) {
         reject(new Error(`synth_kokoro.py exited ${code} (see output above)`));
         return;
       }
-      try {
-        resolve(JSON.parse(out));
-      } catch (err) {
-        reject(new Error(`could not parse synth output as JSON: ${err.message}`));
+      // Not JSON.parse(out): kokoro prints "WARNING: Defaulting repo_id to
+      // hexgrad/Kokoro-82M..." to stdout ahead of the report, which made this
+      // throw and left the manifest stale while every clip rendered fine.
+      // See scripts/synth-report.mjs.
+      const report = extractLastJsonObject(out);
+      if (!report) {
+        reject(new Error(
+          `no parseable JSON report from synth_kokoro.py.\n` +
+          `--- raw stdout (${out.length} bytes) ---\n${out || '(empty)'}\n--- end raw stdout ---`
+        ));
+        return;
       }
+      resolve(report);
     });
     child.stdin.end(JSON.stringify(request));
   });
