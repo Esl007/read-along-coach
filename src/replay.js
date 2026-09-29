@@ -24,33 +24,119 @@
  */
 export function createReplay(script, { onWord, onTick, onEnd, tickMs = 250, tailMs = 1000 } = {}) {
   const endAt = (script.length ? script[script.length - 1].end : 0) + tailMs;
-  let interval = null, timeouts = [], t0 = null;
 
-  return {
+  // ── Pause/resume: one declarative schedule, not a pile of live timers ──────
+  //
+  // The old shape kept an anonymous `timeouts` array whose entries could not be
+  // told apart, so there was no way to reschedule "only the events that have
+  // not fired yet" — pausing meant losing events and resuming meant replaying
+  // them. So the schedule is now DATA: one entry per word event (plus the end
+  // event), each carrying its own stream-clock time `at`, its own live timer
+  // handle, and a `fired` latch.
+  //
+  // The `fired` latch is what makes double-firing structurally impossible:
+  // it is set inside the callback before anything is dispatched, and both
+  // pause() and the (re)scheduler skip any entry that already has it. A word
+  // therefore reaches onWord exactly once across any number of pause/resume
+  // cycles — which matters because every onWord lands in the scored
+  // transcript, so a double-fire would silently corrupt WCPM and accuracy.
+  //
+  // Time is kept as `elapsed` (ms since the replay's own start), derived from
+  // t0. Pausing freezes it (`heldElapsed`); resuming re-derives a new t0 from
+  // it, so all remaining entries stay at their original positions relative to
+  // each other and to the script — the replay clock simply stops during the
+  // pause rather than running on under the hood.
+  const entries = script.map((word) => ({
+    at: word.end,
+    fired: false,
+    timer: null,
+    dispatch(now) {
+      onWord(word, now);
+      // Also poke onTick right after each word lands: if the periodic
+      // interval below is running coarser than tickMs (throttled tab,
+      // busy main thread), a stall window between two word events could
+      // otherwise never be sampled by any tick at all.
+      onTick?.(now);
+    },
+  }));
+
+  let interval = null, t0 = null, started = false, paused = false, heldElapsed = 0;
+
+  const elapsed = () => (paused || t0 === null ? heldElapsed : performance.now() - t0);
+
+  /** Arm timers for every entry that has not fired yet, plus the tick interval. */
+  function arm() {
+    const base = elapsed();
+    for (const e of entries) {
+      if (e.fired || e.timer !== null) continue;
+      // A pause longer than the script's remaining runtime leaves a negative
+      // delay; clamping at 0 makes those entries fire immediately on resume
+      // (in schedule order) rather than being dropped — notably the end event,
+      // which is the only thing that can finish the session.
+      const delay = Math.max(0, e.at - base);
+      e.timer = setTimeout(() => {
+        e.timer = null;
+        if (e.fired) return;     // exactly-once, belt and suspenders
+        e.fired = true;
+        if (e.isEnd) { api.stop(); onEnd?.(endAt); return; }
+        e.dispatch(elapsed());
+      }, delay);
+    }
+    interval = setInterval(() => onTick?.(elapsed()), tickMs);
+  }
+
+  /** Disarm every live timer without touching any `fired` latch. */
+  function disarm() {
+    clearInterval(interval); interval = null;
+    for (const e of entries) {
+      if (e.timer !== null) { clearTimeout(e.timer); e.timer = null; }
+    }
+  }
+
+  entries.push({ at: endAt, fired: false, timer: null, isEnd: true });
+
+  const api = {
     start() {
+      if (started) return;
+      started = true; paused = false; heldElapsed = 0;
       t0 = performance.now();
-      for (const word of script) {
-        const delay = Math.max(0, word.end - (performance.now() - t0));
-        // Also poke onTick right after each word lands: if the periodic
-        // interval below is running coarser than tickMs (throttled tab,
-        // busy main thread), a stall window between two word events could
-        // otherwise never be sampled by any tick at all.
-        timeouts.push(setTimeout(() => {
-          const now = performance.now() - t0;
-          onWord(word, now);
-          onTick?.(now);
-        }, delay));
-      }
-      interval = setInterval(() => onTick?.(performance.now() - t0), tickMs);
-      const endDelay = Math.max(0, endAt - (performance.now() - t0));
-      timeouts.push(setTimeout(() => { this.stop(); onEnd?.(endAt); }, endDelay));
+      arm();
     },
+
+    /**
+     * Freeze the replay clock and tear down every pending timer. Idempotent:
+     * a second pause() while already paused is a no-op (it must not re-snapshot
+     * heldElapsed, which by then has stopped advancing anyway, nor disarm
+     * timers that are already gone).
+     */
+    pause() {
+      if (!started || paused) return;
+      heldElapsed = performance.now() - t0;
+      paused = true;
+      disarm();
+    },
+
+    /** Re-derive t0 from the frozen elapsed time and re-arm only unfired events. */
+    resume() {
+      if (!started || !paused) return;
+      paused = false;
+      t0 = performance.now() - heldElapsed;
+      arm();
+    },
+
     stop() {
-      clearInterval(interval); interval = null;
-      timeouts.forEach(clearTimeout); timeouts = [];
+      started = false; paused = false;
+      disarm();
     },
-    get running() { return interval !== null; },
+
+    /** False while paused as well as before start/after stop. */
+    get running() { return started && !paused; },
+    get paused() { return started && paused; },
+    /** Stream-clock ms consumed so far — frozen while paused. Test/diagnostic aid. */
+    get elapsedMs() { return started ? elapsed() : heldElapsed; },
   };
+
+  return api;
 }
 
 /**

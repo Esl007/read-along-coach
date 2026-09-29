@@ -163,6 +163,125 @@ for (const session of SESSIONS) {
   });
 }
 
+// ── Pause / resume (createReplay) ───────────────────────────────────────────
+// Every onWord lands in the scored transcript, so a word that fires twice
+// across a pause/resume cycle silently corrupts WCPM and accuracy — and a word
+// that never fires at all reads as a "skipped" wall. These tests pin both
+// directions with real timers on a small synthetic script.
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Tiny script with generous gaps, so a pause can land cleanly between words. */
+const pauseScript = [
+  { text: 'the', confidence: 0.9, start: 40, end: 60 },
+  { text: 'cat', confidence: 0.9, start: 140, end: 160 },
+  { text: 'sat', confidence: 0.9, start: 240, end: 260 },
+  { text: 'down', confidence: 0.9, start: 340, end: 360 },
+];
+
+/** Collect onWord/onEnd from a createReplay run, letting the caller poke it. */
+function harness(script, { tickMs = 25, tailMs = 100 } = {}) {
+  const heard = [];
+  let ended = 0;
+  let endResolve;
+  const done = new Promise((r) => { endResolve = r; });
+  const replay = createReplay(script, {
+    tickMs,
+    tailMs,
+    onWord: (word, now) => heard.push({ text: word.text, now }),
+    onEnd: () => { ended++; endResolve(); },
+  });
+  return { replay, heard, done, get ended() { return ended; } };
+}
+
+test('pause/resume: every word fires exactly once and in order', async () => {
+  const h = harness(pauseScript);
+  h.replay.start();
+  await sleep(180);            // past "the" and "cat", before "sat"
+  h.replay.pause();
+  const atPause = h.heard.map((w) => w.text);
+  await sleep(300);            // long enough that a broken pause would fire words
+  assert.deepEqual(h.heard.map((w) => w.text), atPause,
+    'no word may fire while paused');
+  h.replay.resume();
+  await h.done;
+  await sleep(60);             // give any stray duplicate timer a chance to fire
+
+  const texts = h.heard.map((w) => w.text);
+  assert.deepEqual(texts, ['the', 'cat', 'sat', 'down'],
+    'every word exactly once, original order preserved');
+  assert.equal(h.ended, 1, 'onEnd must fire exactly once');
+});
+
+test('pause longer than the remaining script still delivers the end event', async () => {
+  const h = harness(pauseScript);
+  h.replay.start();
+  await sleep(80);             // only "the" has landed
+  h.replay.pause();
+  // Pause for well over the script's whole remaining runtime (endAt = 460ms).
+  // Naive rescheduling computes a negative delay here; clamping at 0 is what
+  // keeps the end event (and the un-fired words) alive.
+  await sleep(700);
+  assert.equal(h.ended, 0, 'onEnd must not fire while paused');
+  h.replay.resume();
+  await h.done;
+  await sleep(60);
+  assert.deepEqual(h.heard.map((w) => w.text), ['the', 'cat', 'sat', 'down'],
+    'overdue words still fire, exactly once each, in order');
+  assert.equal(h.ended, 1);
+});
+
+test('running reflects paused state', async () => {
+  const h = harness(pauseScript);
+  assert.equal(h.replay.running, false, 'not running before start()');
+  h.replay.start();
+  assert.equal(h.replay.running, true);
+  assert.equal(h.replay.paused, false);
+  h.replay.pause();
+  assert.equal(h.replay.running, false, 'paused replay is not running');
+  assert.equal(h.replay.paused, true);
+  h.replay.resume();
+  assert.equal(h.replay.running, true);
+  assert.equal(h.replay.paused, false);
+  await h.done;
+  assert.equal(h.replay.running, false, 'stopped after onEnd');
+  assert.equal(h.replay.paused, false);
+});
+
+test('pause() and resume() are idempotent', async () => {
+  const h = harness(pauseScript);
+  h.replay.start();
+  await sleep(180);
+  h.replay.pause();
+  const frozen = h.replay.elapsedMs;
+  h.replay.pause(); h.replay.pause();   // extra pauses must not re-snapshot
+  await sleep(120);
+  assert.equal(h.replay.elapsedMs, frozen, 'the clock stays frozen while paused');
+  const atPause = h.heard.map((w) => w.text);
+  assert.deepEqual(h.heard.map((w) => w.text), atPause);
+
+  h.replay.resume();
+  h.replay.resume(); h.replay.resume();  // extra resumes must not double-arm
+  await h.done;
+  await sleep(60);
+  assert.deepEqual(h.heard.map((w) => w.text), ['the', 'cat', 'sat', 'down'],
+    'repeated resume() must not re-arm an already-armed event');
+  assert.equal(h.ended, 1, 'repeated resume() must not duplicate onEnd');
+});
+
+test('resume() before start() and pause() after stop() are no-ops', async () => {
+  const h = harness(pauseScript);
+  h.replay.resume();                    // nothing started yet
+  assert.equal(h.replay.running, false);
+  assert.equal(h.heard.length, 0);
+  h.replay.start();
+  h.replay.stop();
+  h.replay.pause();                     // already stopped
+  assert.equal(h.replay.running, false);
+  await sleep(200);
+  assert.equal(h.ended, 0, 'a stopped replay must never call onEnd');
+});
+
 test('createReplay stays correct when the tick interval is throttled 4x slower than requested', async () => {
   // Regression test for the real hang/skip bug: browsers do not guarantee a
   // "250ms" setInterval actually fires every 250ms. Confirm the
