@@ -2,6 +2,7 @@ import { PASSAGES, words } from '/src/passages.js';
 import { alignPrefix, wcpm, struggleWords, nextExpectedIndex } from '/src/aligner.js';
 import { createPatience, State } from '/src/patience.js';
 import { createReplay } from '/src/replay.js';
+import { phrasesForSession } from '/src/phrases.js';
 import { createTranscript } from '/src/transcript.js';
 import { SESSIONS } from '/src/sessions/index.js';
 
@@ -105,8 +106,28 @@ const racAudio = {
   voiceName: null,
   voiceCount: 0,
   reason: null,            // human-readable explanation when path === 'none'
+  // ── Serial-queue counters (see the audio queue section below) ──────────────
+  queued: 0,               // clips handed to enqueue()
+  played: 0,               // clips actually started
+  dropped: 0,              // clips discarded for being stale on their turn
+  interrupts: 0,           // coach words that pre-empted whatever was audible
+  phraseClips: 0,          // phrases narrated from a single phrase-level clip
+  wordFallbacks: 0,        // phrases that had to fall back to per-word clips
 };
 window.__racAudio = racAudio;
+
+// Phrase-narration manifest state. These MUST be declared here, above the
+// speechSynthesis block below, and not beside the loader that fills them.
+// refreshVoices() runs synchronously during module init and calls
+// updateAudioDiagnosticUI(), which reads phraseManifest — so declaring these
+// further down the file puts them in the temporal dead zone at that moment and
+// throws "Cannot access 'phraseManifest' before initialization". That aborts
+// module evaluation, so every button handler and the initial
+// buildPassageSpans() at the bottom of this file silently never run and the
+// entire app is dead on arrival. `let x = null` looks inert; under a
+// same-module init-time call it is not.
+let phraseManifest = null;   // Map<id, {seconds, file}> once loaded (possibly empty)
+let phraseManifestError = null;
 
 let ttsVoice = null;
 
@@ -150,8 +171,8 @@ if (typeof speechSynthesis !== 'undefined') {
   racAudio.reason = 'window.speechSynthesis is not defined in this browser.';
 }
 
-// ── Fallback: pre-rendered clips ────────────────────────────────────────────
-const clipCache = new Map(); // normalized word -> HTMLAudioElement
+// ── Fallback / narration source: pre-rendered clips ─────────────────────────
+const clipCache = new Map(); // src -> HTMLAudioElement
 let clipManifest = null;     // Set of words we actually have clips for, once loaded
 
 async function loadClipManifest() {
@@ -167,33 +188,220 @@ async function loadClipManifest() {
 }
 loadClipManifest();
 
+// ── Phrase-level clips (voices/phrases/) ────────────────────────────────────
+//
+// Loaded exactly as defensively as the per-word manifest above, and for the
+// same reason: both files are produced by an offline generator script
+// (scripts/build-phrases.mjs), so a fresh checkout, a half-finished build, or
+// a deploy that shipped the code but not the assets are all NORMAL states, not
+// crashes. A missing file, a malformed file, or a missing individual entry all
+// degrade to the per-word clips and say so on screen.
+//
+// The shape is normalized on the way in because the generator owns the file
+// format: we accept a bare array of entries, an object keyed by id, or a
+// {phrases: [...]} wrapper, and we only ever read `id`, `seconds` and `file`.
+// `file` is used when present rather than assuming `<id>.wav`, so the
+// generator stays free to rename its output without breaking the player.
+// (Declared far above, next to racAudio — updateAudioDiagnosticUI reads these
+// and runs during module init, before this point is reached.)
+
+function normalizePhraseManifest(raw) {
+  const out = new Map();
+  const add = (id, seconds, file) => {
+    if (typeof id !== 'string' || !id) return;
+    const s = Number(seconds);
+    out.set(id, {
+      seconds: Number.isFinite(s) && s > 0 ? s : 0,
+      file: typeof file === 'string' && file ? file : `${id}.wav`,
+    });
+  };
+  const list = Array.isArray(raw) ? raw : Array.isArray(raw?.phrases) ? raw.phrases : null;
+  if (list) {
+    for (const e of list) {
+      if (typeof e === 'string') add(e);
+      else if (e && typeof e === 'object') add(e.id, e.seconds ?? e.duration, e.file);
+    }
+  } else if (raw && typeof raw === 'object') {
+    for (const [id, v] of Object.entries(raw)) {
+      if (typeof v === 'number') add(id, v);
+      else if (v && typeof v === 'object') add(id, v.seconds ?? v.duration, v.file);
+      else add(id);
+    }
+  }
+  return out;
+}
+
+const phraseManifestReady = (async () => {
+  try {
+    const res = await fetch('/voices/phrases/manifest.json');
+    if (!res.ok) throw new Error(`phrase manifest fetch ${res.status}`);
+    phraseManifest = normalizePhraseManifest(await res.json());
+  } catch (err) {
+    phraseManifest = new Map();
+    phraseManifestError = err.message;
+    console.warn('[read-along-coach] no phrase clips available:', err);
+  }
+  updateAudioDiagnosticUI();
+})();
+
 function normalizeForClip(word) {
   return String(word).replace(/[^\w']/g, '').toLowerCase();
 }
 
-function playClip(word) {
+/** Source URL for a single-word clip, or null if we don't have that word. */
+function wordClipSrc(word) {
   const key = normalizeForClip(word);
-  if (!clipManifest || !clipManifest.has(key)) {
-    racAudio.path = 'none';
-    racAudio.reason = `No recorded clip for "${key}" and Web Speech is unavailable in this browser.`;
-    updateAudioDiagnosticUI();
-    return;
-  }
-  let audio = clipCache.get(key);
-  if (!audio) {
-    audio = new Audio(`/voices/${encodeURIComponent(key)}.wav`);
-    clipCache.set(key, audio);
-  } else {
-    audio.currentTime = 0;
-  }
+  if (!clipManifest || !clipManifest.has(key)) return null;
+  return `/voices/${encodeURIComponent(key)}.wav`;
+}
+
+// ── Serial audio queue (defect 2: "the words are overlapping") ──────────────
+//
+// The old player called audio.play() the moment a word event landed. Authored
+// event gaps are ~300-500ms; a spoken word clip runs 400-900ms. So clips were
+// routinely started on top of each other, and because every start was
+// unconditional the backlog could only grow — which is how "overlapping"
+// became "unintelligible".
+//
+// The invariant here is simple and enforced in exactly one place: `playingEl`
+// is the ONLY element that may be audible, and the only function that ever
+// starts playback (audioStart) calls audioHalt() first. Nothing else calls
+// play(). A queued clip can only be started from audioDrain(), which bails out
+// unless playingEl is null — i.e. a queued clip never starts until the
+// previous one's 'ended'/'error' handler has cleared the slot. JavaScript is
+// single-threaded, so there is no window in which two elements are live.
+//
+// Web Speech is a second, un-serializable output channel, so it is folded into
+// the same invariant from both sides: audioDrain() refuses to start a clip
+// while an utterance is outstanding (`webSpeechSpeaking`), and the coach's
+// interrupt path cancels speech AND halts the clip before it speaks.
+//
+// Staleness: audio that has fallen behind the highlight is worse than silence,
+// so a clip whose scheduled stream time is already more than AUDIO_STALE_MS in
+// the past when its turn finally comes is DROPPED, not played. This is what
+// stops a backlog from growing without bound; racAudio.dropped counts it.
+const AUDIO_STALE_MS = 1200;
+
+// Per-word clips carry no duration in the manifest, so the phrase scheduler
+// needs an estimate to space consecutive word fallbacks. Deliberately generous:
+// over-spacing costs a little lag (and the staleness drop catches the extreme),
+// under-spacing costs exactly the overlap we're fixing.
+const WORD_CLIP_EST_MS = 700;
+
+const audio = {
+  backlog: [],       // [{src, at}] — `at` is the stream-clock ms it was due
+  playingEl: null,   // the one element that may be audible right now
+  paused: false,
+  clock: 0,          // latest known stream-clock ms, fed by the replay tick
+};
+let webSpeechSpeaking = false;
+
+Object.defineProperties(racAudio, {
+  playing: { get: () => audio.playingEl !== null || webSpeechSpeaking, enumerable: true },
+  backlog: { get: () => audio.backlog.length, enumerable: true },
+  paused:  { get: () => audio.paused, enumerable: true },
+});
+
+function audioSetClock(now) { if (now > audio.clock) audio.clock = now; }
+
+function clipElement(src) {
+  let el = clipCache.get(src);
+  if (!el) { el = new Audio(src); clipCache.set(src, el); }
+  return el;
+}
+
+/** Silence whatever is audible on the clip channel. Never fires 'ended'. */
+function audioHalt() {
+  const el = audio.playingEl;
+  if (!el) return;
+  audio.playingEl = null;
+  el.onended = null; el.onerror = null;
+  try { el.pause(); } catch { /* element already torn down */ }
+}
+
+/** The ONLY place playback ever begins. */
+function audioStart(src) {
+  audioHalt();                       // invariant: at most one audible element
+  const el = clipElement(src);
+  audio.playingEl = el;
+  const finish = () => {
+    if (audio.playingEl !== el) return;  // superseded by a halt/interrupt
+    audio.playingEl = null;
+    el.onended = null; el.onerror = null;
+    audioDrain();                    // hand the channel to the next clip
+  };
+  el.onended = finish;
+  el.onerror = finish;
+  try { el.currentTime = 0; } catch { /* not seekable yet */ }
+  racAudio.played++;
   racAudio.path = 'clips';
   racAudio.reason = null;
   updateAudioDiagnosticUI();
-  audio.play().catch((err) => {
-    racAudio.path = 'none';
-    racAudio.reason = `Recorded clip playback failed: ${err.message}`;
+  el.play().catch((err) => {
+    racAudio.lastError = `Recorded clip playback failed: ${err.message}`;
     updateAudioDiagnosticUI();
+    finish();                        // don't wedge the queue on one bad clip
   });
+}
+
+/** Queue a clip to play when the channel frees up. Never overlaps. */
+function audioEnqueue(src, at = null) {
+  if (!src) return;
+  audio.backlog.push({ src, at });
+  racAudio.queued++;
+  audioDrain();
+}
+
+/**
+ * The coach's help word. Wins unconditionally over anything else audible —
+ * it is the pedagogically important audio — and the queue resumes behind it.
+ */
+function audioInterrupt(src) {
+  // racAudio.interrupts is counted by the caller (speak), which also owns the
+  // Web Speech side of the same pre-emption.
+  if (!src) return;
+  audio.paused = false;   // a coach interrupt is always allowed to be heard
+  audioStart(src);
+}
+
+function audioDrain() {
+  if (audio.paused || audio.playingEl || webSpeechSpeaking) return;
+  while (audio.backlog.length) {
+    const item = audio.backlog.shift();
+    if (item.at !== null && audio.clock - item.at > AUDIO_STALE_MS) {
+      racAudio.dropped++;           // fallen behind the highlight — silence is better
+      continue;
+    }
+    audioStart(item.src);
+    return;
+  }
+}
+
+function audioPause() {
+  audio.paused = true;
+  // Keep playingEl set: a paused element resumes mid-clip and, crucially,
+  // never fires 'ended', so the slot stays owned and nothing can slip in.
+  if (audio.playingEl) { try { audio.playingEl.pause(); } catch { /* gone */ } }
+  if (typeof speechSynthesis !== 'undefined') { try { speechSynthesis.pause(); } catch { /* unsupported */ } }
+}
+
+function audioResume() {
+  audio.paused = false;
+  if (typeof speechSynthesis !== 'undefined') { try { speechSynthesis.resume(); } catch { /* unsupported */ } }
+  if (audio.playingEl) audio.playingEl.play().catch(() => { audioHalt(); audioDrain(); });
+  else audioDrain();
+}
+
+/** Full reset, including the backlog. Called from every session teardown. */
+function audioStop() {
+  audio.backlog.length = 0;
+  audio.paused = false;
+  audio.clock = 0;
+  audioHalt();
+  if (typeof speechSynthesis !== 'undefined') {
+    try { speechSynthesis.resume(); speechSynthesis.cancel(); } catch { /* unsupported */ }
+  }
+  webSpeechSpeaking = false;
 }
 
 function markWebSpeechBroken(reason) {
@@ -206,46 +414,117 @@ function markWebSpeechBroken(reason) {
 // is active, or why there is none — so silence reads as "here's what's
 // going on" instead of "the app is broken." See window.__racAudio for the
 // machine-readable version of the same state.
+// Two independent facts now, because the mute toggle no longer governs demo
+// narration (defect 3): what the COACH will do when it steps in, and whether
+// phrase-level demo narration is available. Reporting only the first would be
+// actively misleading — "Coach voice is muted." used to be printed while a
+// demo was narrating perfectly audibly.
 function updateAudioDiagnosticUI() {
   const el = document.getElementById('audioDiagnostic');
   if (!el) return;
+
+  let coachLine;
   if (ttsMuted) {
-    el.textContent = 'Coach voice is muted.';
-    return;
-  }
-  if (racAudio.path === 'webspeech') {
-    el.textContent = `Spoken help is using your browser's voice${racAudio.voiceName ? ` ("${racAudio.voiceName}")` : ''}.`;
+    coachLine = 'Coach voice is muted for live reads (on-screen help still appears).';
+  } else if (racAudio.path === 'webspeech') {
+    coachLine = `Spoken help is using your browser's voice${racAudio.voiceName ? ` ("${racAudio.voiceName}")` : ''}.`;
   } else if (racAudio.path === 'clips') {
-    el.textContent = 'Spoken help is using pre-recorded word clips (your browser has no usable voices).';
+    coachLine = 'Spoken help is using pre-recorded clips (your browser has no usable voices).';
   } else if (racAudio.webSpeechConfirmedBroken && (!clipManifest || clipManifest.size === 0)) {
-    el.textContent = `No audio is available: your browser reported "${racAudio.lastError || 'no working voice'}", and the recorded-clip fallback didn't load either.`;
+    coachLine = `No audio is available: your browser reported "${racAudio.lastError || 'no working voice'}", and the recorded-clip fallback didn't load either.`;
   } else {
-    el.textContent = 'Audio will start once the coach speaks its first word.';
+    coachLine = 'Spoken help will start the first time the coach steps in.';
   }
+
+  let demoLine = '';
+  if (phraseManifest === null) {
+    demoLine = ' Checking demo narration clips…';
+  } else if (phraseManifest.size === 0) {
+    demoLine = phraseManifestError
+      ? ` Demo narration is falling back to single-word clips — the phrase clips didn't load (${phraseManifestError}).`
+      : ' Demo narration is falling back to single-word clips — no phrase clips have been built yet.';
+  } else if (racAudio.wordFallbacks > 0) {
+    demoLine = ` Demo narration is using phrase clips, except for ${racAudio.wordFallbacks} phrase${racAudio.wordFallbacks === 1 ? '' : 's'} with no clip built yet (those fall back to single words).`;
+  } else {
+    demoLine = ' Demo narration always plays, in full phrases, and is silenced with Pause.';
+  }
+
+  el.textContent = coachLine + demoLine;
 }
 
+/**
+ * Speak the coach's help word.
+ *
+ * The mute toggle governs LIVE READS ONLY. In a demo replay both voices are
+ * unconditional: the narrator (scheduled as phrase clips, which never come
+ * through here) and the coach's intervention. "Someone who clicks play demo
+ * means they want it to read for them" — and the coach supplying a stalled
+ * word out loud is the single most persuasive moment in the product, so a
+ * leftover mute preference must not be able to silence it.
+ */
 function speak(word, { priority = false } = {}) {
-  if (ttsMuted) return; // on-screen coach message already covers this case
+  if (ttsMuted && isLiveSession) return; // on-screen coach message covers this
   const cleanWord = normalizeForClip(word);
 
+  if (priority) {
+    // The coach always wins, across BOTH output channels: kill any clip that
+    // is mid-playback and any outstanding utterance before making a sound.
+    racAudio.interrupts++;
+    audioHalt();
+    if (typeof speechSynthesis !== 'undefined') {
+      try { speechSynthesis.resume(); speechSynthesis.cancel(); } catch { /* unsupported */ }
+    }
+    webSpeechSpeaking = false;
+  }
+
   if (!webSpeechUsable()) {
-    playClip(cleanWord);
+    const src = wordClipSrc(cleanWord);
+    if (!src) {
+      racAudio.path = 'none';
+      racAudio.reason = `No recorded clip for "${cleanWord}" and Web Speech is unavailable in this browser.`;
+      updateAudioDiagnosticUI();
+      audioDrain();   // nothing to say — don't leave the queue stalled
+      return;
+    }
+    if (priority) audioInterrupt(src); else audioEnqueue(src);
     return;
   }
 
-  if (priority) speechSynthesis.cancel(); // coach's word always wins over demo narration
   const u = new SpeechSynthesisUtterance(word);
   if (ttsVoice) u.voice = ttsVoice;
   u.rate = 0.85;  // slower — easier to follow for early readers / ESL learners
   u.pitch = 1.0;  // neutral
 
+  // `webSpeechSpeaking` is the other half of the one-clip-at-a-time invariant:
+  // while an utterance is outstanding, audioDrain() refuses to start a queued
+  // clip, so the coach's voice and the demo narration cannot talk over each
+  // other even though they are two unrelated output APIs. Clearing it always
+  // re-drains, so a finished/failed utterance immediately hands the channel
+  // back to the queue rather than stalling it forever.
   let started = false;
+  const release = () => {
+    if (!webSpeechSpeaking) return;
+    webSpeechSpeaking = false;
+    audioDrain();
+  };
+  const failover = () => {
+    // Free the channel WITHOUT draining first: the replacement clip is about to
+    // claim it, and letting a queued clip start in between would only get it
+    // halted a moment later.
+    webSpeechSpeaking = false;
+    const src = wordClipSrc(cleanWord);
+    if (src) audioInterrupt(src);
+    else audioDrain();
+  };
+
   const startTimeout = setTimeout(() => {
     if (!started) {
       markWebSpeechBroken('Utterance never fired onstart within 1.5s (treated as synthesis failure).');
-      playClip(cleanWord);
+      failover();
     }
   }, 1500);
+
+  webSpeechSpeaking = true;
 
   u.onstart = () => {
     started = true;
@@ -255,7 +534,7 @@ function speak(word, { priority = false } = {}) {
     racAudio.reason = null;
     updateAudioDiagnosticUI();
   };
-  u.onend = () => { clearTimeout(startTimeout); };
+  u.onend = () => { clearTimeout(startTimeout); release(); };
   u.onerror = (e) => {
     clearTimeout(startTimeout);
     if (!started) {
@@ -264,7 +543,9 @@ function speak(word, { priority = false } = {}) {
       // with error 'interrupted'/'canceled' after a successful start, which
       // is expected behavior, not a failure.
       markWebSpeechBroken(`SpeechSynthesisUtterance error: ${e.error}`);
-      playClip(cleanWord);
+      failover();
+    } else {
+      release();
     }
   };
 
@@ -309,7 +590,14 @@ function setStatus(text, { playing = false } = {}) {
 //      changed => no alignment, no paint, no work at all.
 //
 // window.__racRender exposes the counters used to prove the above.
-const racRender = { builds: 0, aligns: 0, frames: 0, paints: 0, classWrites: 0 };
+//
+// One thing rAF alone cannot do: fire in a backgrounded tab. Browsers stop
+// delivering frames entirely there, so a paint scheduled just before the tab
+// was hidden would sit pending indefinitely and the highlight would be frozen
+// at a stale word when the reader came back. The tick-driven fallback below
+// (PAINT_FALLBACK_MS / maybePaintWithoutFrame) closes that hole without
+// touching the fast path.
+const racRender = { builds: 0, aligns: 0, frames: 0, paints: 0, classWrites: 0, fallbackPaints: 0 };
 window.__racRender = racRender;
 
 let wordSpans = [];        // one <span class="w"> per reference word, built once
@@ -359,19 +647,45 @@ function markTranscriptChanged() {
   scheduleRender();
 }
 
+// If a paint has been pending this long with no frame delivered, the tab is
+// almost certainly backgrounded (or the compositor is starved) and no frame is
+// coming. Paint from the tick instead rather than let the highlight stick.
+const PAINT_FALLBACK_MS = 250;
+let paintPendingSince = null;  // performance.now() when the rAF was requested
+
 function scheduleRender() {
   if (rafHandle !== null) return; // already painting on the next frame
+  paintPendingSince = performance.now();
   rafHandle = requestAnimationFrame(() => {
     rafHandle = null;
+    paintPendingSince = null;
     racRender.frames++;
     paintPassage();
   });
+}
+
+/**
+ * Tick-driven safety net for the rAF path. Idempotent with it by construction:
+ * the pending frame is CANCELLED before we paint, so the two can never both
+ * run for the same request, and paintPassage() additionally no-ops when
+ * paintedRev is already current. Called from onTick, which is a setInterval —
+ * throttled in a background tab but, unlike rAF, never stopped.
+ */
+function maybePaintWithoutFrame() {
+  if (rafHandle === null || paintPendingSince === null) return;
+  if (performance.now() - paintPendingSince < PAINT_FALLBACK_MS) return;
+  cancelAnimationFrame(rafHandle);
+  rafHandle = null;
+  paintPendingSince = null;
+  racRender.fallbackPaints++;
+  paintPassage();
 }
 
 // Paint synchronously right now (used on session end, so the report and the
 // final highlight state land in the same turn).
 function flushRender() {
   if (rafHandle !== null) { cancelAnimationFrame(rafHandle); rafHandle = null; }
+  paintPendingSince = null;
   paintPassage();
 }
 
@@ -472,6 +786,8 @@ function onWordEvent(word, now) {
 function onTick(now) {
   if (!sessionActive) return;
   lastNow = Math.max(lastNow, now);
+  pumpNarration(now);     // demo only; no-op for a live read
+  maybePaintWithoutFrame(); // rAF safety net for a backgrounded tab
   const s = patience.tick(now);
   if (maybeAutoFinish(now)) return; // owns the status line while wrapping up
   if (s === State.WORKING) setStatus('Take your time… 💪', { playing: !isLiveSession });
@@ -526,7 +842,14 @@ function teardown() {
   clearTimeout(wrapUpDeadline); wrapUpDeadline = null;
   clearTimeout(coachClearTimer); coachClearTimer = null;
   if (rafHandle !== null) { cancelAnimationFrame(rafHandle); rafHandle = null; }
+  paintPendingSince = null;
   if (replay) { replay.stop(); replay = null; }
+  // Audio outlives nothing: clear the backlog, silence the channel, and put
+  // the Pause control back to its disabled resting state. Ending or finishing
+  // a session therefore always resets it, no matter which exit path ran.
+  audioStop();
+  narrationPlan = null; narrationIdx = 0;
+  setPauseControl(null);
   if (ws) {
     // Detach first: closing the socket ourselves must never be reported as an
     // unexpected close (that would stomp the report's status line).
@@ -749,30 +1072,111 @@ function stop() {
 
 // ── Replay path (demo without a mic or API key) ─────────────────────────────
 
+// ── Phrase narration (defect 1: "'The' 'cat' are read separately") ──────────
+//
+// The old demo spoke one word per event, so a sentence came out as a list of
+// isolated words with isolated-word prosody. The synthesis unit, not the
+// schedule, was the problem — see the header of src/phrases.js for why a
+// concatenation of single words can never sound like a phrase.
+//
+// So: group the session's events into phrases (phrasesForSession — the shared
+// contract with the generator), and play ONE clip per phrase. The plan is a
+// flat, pre-sorted list of {at, src} on the replay's own stream clock; the
+// tick pumps it into the serial queue, which means narration inherits the
+// queue's non-overlap and staleness guarantees for free, and pauses with the
+// replay because a paused replay stops ticking.
+//
+// `cursor` is why the manifest's `seconds` matters: a phrase clip is as long
+// as it is, and the authored `start` of the next phrase may fall inside it.
+// Scheduling the next clip no earlier than the previous one can have finished
+// keeps the queue from ever building a backlog in the first place, instead of
+// relying on the drop rule to clean one up.
+let narrationPlan = null;   // [{at, src}] sorted by `at`, or null for a live read
+let narrationIdx = 0;
+
+function buildNarrationPlan(session) {
+  const phrases = phrasesForSession(session);
+  const plan = [];
+  let fallbacks = 0, phraseClips = 0;
+  let cursor = 0;   // earliest stream time the next clip may begin
+
+  for (const p of phrases) {
+    const entry = phraseManifest?.get(p.id);
+    if (entry) {
+      const at = Math.max(p.start, cursor);
+      plan.push({ at, src: `/voices/phrases/${encodeURIComponent(entry.file)}` });
+      cursor = at + (entry.seconds > 0 ? entry.seconds * 1000 : WORD_CLIP_EST_MS);
+      phraseClips++;
+    } else {
+      // No clip built for this phrase: degrade to the per-word clips that
+      // already exist. Worse prosody, but audible — and reported on screen.
+      fallbacks++;
+      for (const i of p.indices) {
+        const ev = session.events[i];
+        const src = wordClipSrc(ev.text);
+        if (!src) continue;           // no clip for this word either: silence
+        const at = Math.max(ev.start, cursor);
+        plan.push({ at, src });
+        cursor = at + WORD_CLIP_EST_MS;
+      }
+    }
+  }
+
+  racAudio.phraseClips = phraseClips;
+  racAudio.wordFallbacks = fallbacks;
+  updateAudioDiagnosticUI();
+  return plan;
+}
+
+/**
+ * Hand every clip whose scheduled time has arrived to the serial queue.
+ * Driven from onTick, so `now` is the replay's own elapsed stream time — which
+ * freezes while the replay is paused, which is exactly what we want: narration
+ * neither races ahead nor goes stale during a pause.
+ */
+function pumpNarration(now) {
+  if (!narrationPlan) return;
+  audioSetClock(now);
+  while (narrationIdx < narrationPlan.length && narrationPlan[narrationIdx].at <= now) {
+    const item = narrationPlan[narrationIdx++];
+    audioEnqueue(item.src, item.at);
+  }
+}
+
 function startDemo() {
   const session = SESSIONS[demoSel.value];
   const passage = PASSAGES.find(p => p.id === session.passageId);
   sel.value = PASSAGES.indexOf(passage);
-  beginSession(passage, { live: false });
+  const token = beginSession(passage, { live: false });
   setStatus(`Replaying “${session.title}”…`, { playing: true });
+
+  // Narration is UNCONDITIONAL (defect 3): clicking Play demo means "read it
+  // to me", so nothing here consults ttsMuted — that toggle now governs only
+  // the live-read coach voice. Pause is how a demo is silenced.
+  // The manifest is fetched once at module load; this await is a resolved
+  // microtask in practice, and the token guard covers the case where the
+  // reader started something else in between.
+  phraseManifestReady.then(() => {
+    if (token !== sessionToken || !sessionActive) return;
+    narrationPlan = buildNarrationPlan(session);
+    narrationIdx = 0;
+  });
+
   replay = createReplay(session.events, {
     // Adapter: the replay script's plain word events go through
     // transcript.addWord() first so they land in the SAME shared transcript
     // the live path writes into (see transcript.js addWord doc comment) —
     // both sources converge on one render/score pipeline downstream.
+    // Narration is NOT driven from here any more: one clip per phrase is
+    // scheduled off the plan above. Speaking per word here as well would
+    // reintroduce exactly the overlap this replaces.
     onWord: (word, now) => {
       onWordEvent(transcript.addWord(word), now);
-      // Opt-in synthetic narration (defect: "demo has no voice at all" reads
-      // as broken even though the demo is a genuinely silent, pre-recorded
-      // event timeline with no audio to play). Off by default; when the
-      // reader enables it, only speak finalized words in sync with the
-      // replay's own timeline, and never at 'priority' — the coach's help
-      // word always pre-empts narration, never the other way around.
-      if (demoNarrationOn && word.word_is_final !== false) speak(word.text);
     },
     onTick,
     onEnd: () => {
       replay = null;
+      setPauseControl(null);   // nothing left to pause
       // The recorded script has run out. If the reader got through the whole
       // passage, hand off to the SAME auto-finish path a live read uses so the
       // demo shows the identical countdown; otherwise there is nothing left to
@@ -782,6 +1186,40 @@ function startDemo() {
     },
   });
   replay.start();
+  setPauseControl('pause');
+}
+
+// ── Pause / resume the demo (defect 4: "no option to pause play demo") ──────
+//
+// Pausing has to stop BOTH clocks together or they desynchronise: the replay
+// clock (highlight + patience + the narration pump) and the audio channel.
+// The button's own label is derived from one state variable rather than
+// toggled in place, so it cannot drift out of sync with what it does.
+let demoPaused = false;
+
+/** state: 'pause' (running, offer Pause) | 'resume' (paused) | null (hide). */
+function setPauseControl(state) {
+  demoPaused = state === 'resume';
+  const btn = $('pauseBtn');
+  if (!btn) return;
+  btn.disabled = state === null;
+  btn.textContent = demoPaused ? 'Resume demo' : 'Pause demo';
+  btn.setAttribute('aria-pressed', demoPaused ? 'true' : 'false');
+}
+
+function togglePause() {
+  if (!replay) return;               // no demo in flight; nothing to pause
+  if (demoPaused) {
+    replay.resume();
+    audioResume();
+    setPauseControl('pause');
+    lastStatusKey = null;            // force the next tick to rewrite the status
+  } else {
+    replay.pause();
+    audioPause();
+    setPauseControl('resume');
+    setStatus('Paused — press Resume demo to carry on.');
+  }
 }
 
 /**
@@ -837,10 +1275,21 @@ function renderHistory() {
   ).join('');
 }
 
-// ── Voice controls: mute (persisted) + opt-in demo narration ────────────────
-
-const DEMO_NARRATION_KEY = 'rac-demo-narration';
-let demoNarrationOn = localStorage.getItem(DEMO_NARRATION_KEY) === '1';
+// ── Voice controls: one toggle, and it means one thing ──────────────────────
+//
+// There used to be a second "Narrate demo" switch, and the demo also silently
+// obeyed the mute toggle. Both are gone (defect 3). Clicking Play demo is
+// itself the request to be read to, so making it conditional on two unrelated
+// switches was incoherent: the button's label promised something the toggles
+// could quietly withhold. Demo narration is now unconditional, and Pause is
+// the control that silences it.
+//
+// What remains is the live-read coach voice, which genuinely does need a mute
+// (a classroom, a shared room, a reader who finds it startling) — and that is
+// all `ttsMuted` governs now. It is read in exactly one place, speak(), and
+// only when isLiveSession is true — a demo replay speaks both voices come
+// what may.
+localStorage.removeItem('rac-demo-narration'); // retired key; don't leave litter
 
 const muteToggle = $('muteToggle');
 if (muteToggle) {
@@ -853,18 +1302,11 @@ if (muteToggle) {
 }
 updateAudioDiagnosticUI();
 
-const narrationToggle = $('narrationToggle');
-if (narrationToggle) {
-  narrationToggle.checked = demoNarrationOn;
-  narrationToggle.onchange = () => {
-    demoNarrationOn = narrationToggle.checked;
-    localStorage.setItem(DEMO_NARRATION_KEY, demoNarrationOn ? '1' : '0');
-  };
-}
-
 $('startBtn').onclick = start;
 $('stopBtn').onclick = stop;
 $('demoBtn').onclick = startDemo;
+$('pauseBtn').onclick = togglePause;
+setPauseControl(null);   // disabled until a demo is actually running
 sel.onchange = () => {
   if (sessionActive) return; // can't swap the passage out from under a live read
   refWords = words(PASSAGES[sel.value]);

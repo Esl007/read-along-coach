@@ -64,20 +64,16 @@
           <button id="demoBtn" class="btn btn-ink btn-block">
             <span class="btn-ico" aria-hidden="true">▶</span> Play demo
           </button>
-          <p class="hint demo-note">A silent, real-time visualisation of a recorded reading session — there is no audio recording to play back. Switch on <em>Narrate demo</em> below for a synthetic voice instead.</p>
+          <button id="pauseBtn" class="btn btn-quiet btn-block" aria-pressed="false" disabled>Pause demo</button>
+          <p class="hint demo-note">A real-time replay of a recorded reading session, read aloud phrase by phrase. Press <em>Pause demo</em> to stop the voice and the highlight together.</p>
         </div>
 
         <div class="panel">
           <h2 class="panel-title">Coach voice</h2>
-          <label class="switch" title="Mute the coach's spoken help">
+          <label class="switch" title="Mute the coach's spoken help during a live read. Demo replays always read aloud.">
             <input type="checkbox" id="muteToggle" checked>
             <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
-            <span class="switch-label">Coach voice on</span>
-          </label>
-          <label class="switch" title="Have a synthetic voice read the demo's words aloud in sync with playback">
-            <input type="checkbox" id="narrationToggle">
-            <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
-            <span class="switch-label">Narrate demo <small>synthetic voice</small></span>
+            <span class="switch-label">Speak help while I read <small>live reads only — demos always narrate</small></span>
           </label>
           <p class="hint audio-diagnostic" id="audioDiagnostic">Checking available audio…</p>
         </div>
