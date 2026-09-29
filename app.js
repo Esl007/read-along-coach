@@ -1,8 +1,7 @@
 import { PASSAGES, words } from '/src/passages.js';
 import { alignPrefix, wcpm, struggleWords, nextExpectedIndex } from '/src/aligner.js';
 import { createPatience, State } from '/src/patience.js';
-import { createReplay } from '/src/replay.js';
-import { phrasesForSession } from '/src/phrases.js';
+import { buildNarrationTimeline, createNarrationDriver } from '/src/narration.js';
 import { createTranscript } from '/src/transcript.js';
 import { SESSIONS } from '/src/sessions/index.js';
 
@@ -12,7 +11,7 @@ PASSAGES.forEach((p, i) => sel.add(new Option(`Level ${p.level} — ${p.title}`,
 const demoSel = $('demoSelect');
 SESSIONS.forEach((s, i) => demoSel.add(new Option(s.title, i)));
 
-let ws, audioCtx, workletNode, mediaStream, replay;
+let ws, audioCtx, workletNode, mediaStream, narration;
 let refWords = [];
 let transcript;           // live-mic only: turn-replacement accumulator (defect 2)
 let patience, tickTimer = null, startedAt = null, helpCount = 0, lastNow = 0, activePassage = null;
@@ -56,6 +55,11 @@ let sessionToken = 0;
 const AUTO_FINISH_SILENCE_MS = 2600;
 const WRAP_UP_MAX_MS = AUTO_FINISH_SILENCE_MS + 2400; // hard backstop, never hang
 let lastWordAtStream = null; // stream-clock `end` of the last word event
+// Demo only: the authored `end` of the last word event that fired. Null for
+// live reads. This is the recorded reading's own pace, used as the report's
+// denominator so WCPM describes the child in the recording rather than the
+// speed the narration happens to be rendered at.
+let demoAuthoredEndMs = null;
 let wrapUpDeadline = null;
 
 // Real-time demo replay used to give no visible sign of activity beyond a
@@ -281,12 +285,6 @@ function wordClipSrc(word) {
 // the past when its turn finally comes is DROPPED, not played. This is what
 // stops a backlog from growing without bound; racAudio.dropped counts it.
 const AUDIO_STALE_MS = 1200;
-
-// Per-word clips carry no duration in the manifest, so the phrase scheduler
-// needs an estimate to space consecutive word fallbacks. Deliberately generous:
-// over-spacing costs a little lag (and the staleness drop catches the extreme),
-// under-spacing costs exactly the overlap we're fixing.
-const WORD_CLIP_EST_MS = 700;
 
 const audio = {
   backlog: [],       // [{src, at}] — `at` is the stream-clock ms it was due
@@ -753,6 +751,7 @@ function beginSession(passage, { live }) {
   refWords = words(passage);
   helpCount = 0; lastNow = 0; startedAt = null;
   lastWordAtStream = null;
+  demoAuthoredEndMs = null;  // set only by a demo's onWord; must not leak into a live read
   lastKnownStreamEnd = 0;
   lastKnownStreamEndWallAt = performance.now();
   transcript = createTranscript();
@@ -786,7 +785,11 @@ function onWordEvent(word, now) {
 function onTick(now) {
   if (!sessionActive) return;
   lastNow = Math.max(lastNow, now);
-  pumpNarration(now);     // demo only; no-op for a live read
+  // Narration is NOT pumped from here any more. It owns the clock: the demo's
+  // driver computes `now` from the audio position and calls onTick with it, so
+  // this function is a pure consumer of one clock on both paths. Nothing
+  // demo-specific is left in here, which is why the live path's behaviour is
+  // bit-for-bit what it was.
   maybePaintWithoutFrame(); // rAF safety net for a backgrounded tab
   const s = patience.tick(now);
   if (maybeAutoFinish(now)) return; // owns the status line while wrapping up
@@ -843,12 +846,13 @@ function teardown() {
   clearTimeout(coachClearTimer); coachClearTimer = null;
   if (rafHandle !== null) { cancelAnimationFrame(rafHandle); rafHandle = null; }
   paintPendingSince = null;
-  if (replay) { replay.stop(); replay = null; }
+  if (narration) { narration.stop(); narration = null; }
+  if (narrationRaf !== null) { cancelAnimationFrame(narrationRaf); narrationRaf = null; }
+  clearInterval(narrationTimer); narrationTimer = null;
   // Audio outlives nothing: clear the backlog, silence the channel, and put
   // the Pause control back to its disabled resting state. Ending or finishing
   // a session therefore always resets it, no matter which exit path ran.
   audioStop();
-  narrationPlan = null; narrationIdx = 0;
   setPauseControl(null);
   if (ws) {
     // Detach first: closing the socket ourselves must never be reported as an
@@ -882,6 +886,10 @@ function abortActiveSession() {
  * for a live session in which no word was ever heard.
  */
 function scoringElapsedMs() {
+  // A demo replay scores on the recorded session's own pace (see the onWord
+  // comment in startDemo). Live reads are unaffected: demoAuthoredEndMs is
+  // null for them.
+  if (demoAuthoredEndMs !== null) return demoAuthoredEndMs;
   if (lastWordAtStream !== null) return lastWordAtStream;
   if (isLiveSession && startedAt !== null) return performance.now() - startedAt;
   return lastNow;
@@ -1070,77 +1078,113 @@ function stop() {
   endSession();
 }
 
-// ── Replay path (demo without a mic or API key) ─────────────────────────────
-
-// ── Phrase narration (defect 1: "'The' 'cat' are read separately") ──────────
+// ── Demo path (no mic, no API key) ─────────────────────────────────────────
 //
-// The old demo spoke one word per event, so a sentence came out as a list of
-// isolated words with isolated-word prosody. The synthesis unit, not the
-// schedule, was the problem — see the header of src/phrases.js for why a
-// concatenation of single words can never sound like a phrase.
+// ── ONE CLOCK ──────────────────────────────────────────────────────────────
 //
-// So: group the session's events into phrases (phrasesForSession — the shared
-// contract with the generator), and play ONE clip per phrase. The plan is a
-// flat, pre-sorted list of {at, src} on the replay's own stream clock; the
-// tick pumps it into the serial queue, which means narration inherits the
-// queue's non-overlap and staleness guarantees for free, and pauses with the
-// replay because a paused replay stops ticking.
+// This used to be two. A wall-clock replay driver (src/replay.js) fired the
+// word events at the demo script's hand-authored times, and a separate
+// accumulator scheduled the phrase clips off their real durations:
 //
-// `cursor` is why the manifest's `seconds` matters: a phrase clip is as long
-// as it is, and the authored `start` of the next phrase may fall inside it.
-// Scheduling the next clip no earlier than the previous one can have finished
-// keeps the queue from ever building a backlog in the first place, instead of
-// relying on the drop rule to clean one up.
-let narrationPlan = null;   // [{at, src}] sorted by `at`, or null for a live read
-let narrationIdx = 0;
+//     const at = Math.max(p.start, cursor);   // the defect
+//
+// Nothing reconciled them, and `cursor` is an accumulator, so the error was
+// cumulative: audio slid further behind the highlight with every phrase, and
+// wherever a clip was shorter than the authored gap the difference was left as
+// dead air. See the header of src/narration.js for the full argument.
+//
+// Now the audio IS the clock. src/narration.js lays the clips out end-to-end
+// using their real measured durations, derives the highlight time of every word
+// from that layout, and advances the clock from the playing element's own
+// currentTime on requestAnimationFrame. onWordEvent and onTick are handed that
+// same `t`, so the highlight, the patience machine, progress and auto-finish
+// are all reading the clock the audio is on. Drift is impossible by
+// construction rather than by tuning.
+//
+// The LIVE MIC PATH IS UNTOUCHED: it still calls onWordEvent/onTick/endSession
+// from ws.onmessage and its own interval on estimatedStreamNow(). Only the
+// demo's driver changed.
 
-function buildNarrationPlan(session) {
-  const phrases = phrasesForSession(session);
-  const plan = [];
-  let fallbacks = 0, phraseClips = 0;
-  let cursor = 0;   // earliest stream time the next clip may begin
-
-  for (const p of phrases) {
-    const entry = phraseManifest?.get(p.id);
-    if (entry) {
-      const at = Math.max(p.start, cursor);
-      plan.push({ at, src: `/voices/phrases/${encodeURIComponent(entry.file)}` });
-      cursor = at + (entry.seconds > 0 ? entry.seconds * 1000 : WORD_CLIP_EST_MS);
-      phraseClips++;
-    } else {
-      // No clip built for this phrase: degrade to the per-word clips that
-      // already exist. Worse prosody, but audible — and reported on screen.
-      fallbacks++;
-      for (const i of p.indices) {
-        const ev = session.events[i];
-        const src = wordClipSrc(ev.text);
-        if (!src) continue;           // no clip for this word either: silence
-        const at = Math.max(ev.start, cursor);
-        plan.push({ at, src });
-        cursor = at + WORD_CLIP_EST_MS;
-      }
-    }
-  }
-
-  racAudio.phraseClips = phraseClips;
-  racAudio.wordFallbacks = fallbacks;
-  updateAudioDiagnosticUI();
-  return plan;
-}
+let narrationRaf = null;
+let narrationTimer = null;   // backstop: rAF does not run in a background tab
 
 /**
- * Hand every clip whose scheduled time has arrived to the serial queue.
- * Driven from onTick, so `now` is the replay's own elapsed stream time — which
- * freezes while the replay is paused, which is exactly what we want: narration
- * neither races ahead nor goes stale during a pause.
+ * Start one narration clip and hand the driver a handle onto it.
+ *
+ * Playback goes through the same single-audible-element invariant the rest of
+ * the file keeps (`audio.playingEl` is the only element that may be audible,
+ * and audioHalt() runs first). What it does NOT go through is audioEnqueue():
+ * the queue existed to schedule clips, and scheduling now belongs to the
+ * driver. Queueing on top of it would be two clocks again.
+ *
+ * Bypassing the queue means this function does not drain it when a clip ends.
+ * That is safe because nothing can be in it during a demo: speak() is the only
+ * producer and its single call site (the STALLED branch of onTick) always
+ * passes priority:true, which goes to audioInterrupt/audioStart, not
+ * audioEnqueue. Draining here instead would let a queued clip start in the gap
+ * and then be cut off by the next segment.
  */
-function pumpNarration(now) {
-  if (!narrationPlan) return;
-  audioSetClock(now);
-  while (narrationIdx < narrationPlan.length && narrationPlan[narrationIdx].at <= now) {
-    const item = narrationPlan[narrationIdx++];
-    audioEnqueue(item.src, item.at);
-  }
+function narrationPlay(src) {
+  audioHalt();                       // invariant: at most one audible element
+  const el = clipElement(src);
+  audio.playingEl = el;
+  let done = false, error = false;
+
+  const release = () => {
+    if (audio.playingEl !== el) return;
+    audio.playingEl = null;
+    el.onended = null; el.onerror = null;
+  };
+  el.onended = () => { done = true; release(); };
+  el.onerror = () => { error = true; release(); };
+
+  try { el.currentTime = 0; } catch { /* not seekable yet */ }
+  racAudio.played++;
+  racAudio.path = 'clips';
+  racAudio.reason = null;
+  updateAudioDiagnosticUI();
+  el.play().catch((err) => {
+    error = true;
+    racAudio.lastError = `Recorded clip playback failed: ${err.message}`;
+    updateAudioDiagnosticUI();
+    release();
+  });
+
+  return {
+    positionMs: () => el.currentTime * 1000,
+    ended: () => done,
+    // True if this clip can never finish on its own: it errored, or the coach's
+    // interrupt (audioHalt) took the channel away from it. Either way the
+    // driver must fall back to wall time for the rest of the segment instead of
+    // waiting on an element that will never report anything again.
+    failed: () => error || (!done && audio.playingEl !== el),
+    pause: () => { try { el.pause(); } catch { /* gone */ } },
+    resume: () => { el.play().catch(() => { error = true; }); },
+    stop: () => { if (audio.playingEl === el) release(); try { el.pause(); } catch { /* gone */ } },
+  };
+}
+
+/** Resolve a phrase id to its rendered clip, or null if none was built. */
+function phraseClipFor(id) {
+  const entry = phraseManifest?.get(id);
+  if (!entry || !(entry.seconds > 0)) return null;
+  return {
+    src: `/voices/phrases/${encodeURIComponent(entry.file)}`,
+    ms: entry.seconds * 1000,
+    words: entry.words,     // real per-word offsets when the build validated them
+  };
+}
+
+function narrationFrame() {
+  narrationRaf = null;
+  if (!narration) return;
+  narration.tick();
+  if (!narration.running) return;    // paused or finished: resume() restarts us
+  narrationRaf = requestAnimationFrame(narrationFrame);
+}
+
+function startNarrationLoop() {
+  if (narrationRaf === null) narrationRaf = requestAnimationFrame(narrationFrame);
 }
 
 function startDemo() {
@@ -1153,46 +1197,79 @@ function startDemo() {
   // Narration is UNCONDITIONAL (defect 3): clicking Play demo means "read it
   // to me", so nothing here consults ttsMuted — that toggle now governs only
   // the live-read coach voice. Pause is how a demo is silenced.
-  // The manifest is fetched once at module load; this await is a resolved
-  // microtask in practice, and the token guard covers the case where the
-  // reader started something else in between.
+  //
+  // The whole demo now waits for the manifest, because the manifest carries the
+  // clip durations the timeline is built from — there is no second set of times
+  // to fall back on and no useful thing to do before it lands. It is fetched at
+  // module load, so in practice this is a resolved microtask.
   phraseManifestReady.then(() => {
     if (token !== sessionToken || !sessionActive) return;
-    narrationPlan = buildNarrationPlan(session);
-    narrationIdx = 0;
-  });
 
-  replay = createReplay(session.events, {
-    // Adapter: the replay script's plain word events go through
-    // transcript.addWord() first so they land in the SAME shared transcript
-    // the live path writes into (see transcript.js addWord doc comment) —
-    // both sources converge on one render/score pipeline downstream.
-    // Narration is NOT driven from here any more: one clip per phrase is
-    // scheduled off the plan above. Speaking per word here as well would
-    // reintroduce exactly the overlap this replaces.
-    onWord: (word, now) => {
-      onWordEvent(transcript.addWord(word), now);
-    },
-    onTick,
-    onEnd: () => {
-      replay = null;
-      setPauseControl(null);   // nothing left to pause
-      // The recorded script has run out. If the reader got through the whole
-      // passage, hand off to the SAME auto-finish path a live read uses so the
-      // demo shows the identical countdown; otherwise there is nothing left to
-      // wait for, so finish now.
-      if (reachedEndOfPassage()) startWrapUp();
-      else endSession();
-    },
+    const timeline = buildNarrationTimeline(session, {
+      clip: phraseClipFor,
+      wordClip: wordClipSrc,
+    });
+    racAudio.phraseClips = timeline.stats.phraseClips;
+    racAudio.wordFallbacks = timeline.stats.wordFallbacks;
+    updateAudioDiagnosticUI();
+
+    narration = createNarrationDriver({
+      timeline,
+      events: session.events,
+      play: narrationPlay,
+      // Adapter: the demo script's plain word events go through
+      // transcript.addWord() first so they land in the SAME shared transcript
+      // the live path writes into — both sources converge on one
+      // render/score pipeline downstream.
+      onWord: (word, t) => {
+        // WCPM measures the RECORDED reading, not the playback rendering.
+        // `word.end` is the authored stream time — the pace the child in this
+        // recording actually read at. The narration clock is deliberately a
+        // different rate (af_heart at 0.85 says "cat sat in the sun" in 1.3s,
+        // where the script paces those words over 2.3s), so scoring off the
+        // audio clock would report the narrator's fluency instead of the
+        // reader's and a "halting early reader" would come out at 81 WCPM.
+        // This is not a second clock competing with the first: nothing is
+        // synchronised to it, it is only the denominator of the final report.
+        demoAuthoredEndMs = word.end;
+        onWordEvent(transcript.addWord(word), t);
+      },
+      // Keep the coach's own clip queue on the same clock, so its staleness
+      // rule measures against audio position too. Done here rather than inside
+      // onTick because onTick is shared with the live mic path, where there is
+      // no narration clock and nothing should change.
+      onTick: (t) => { audioSetClock(t); onTick(t); },
+      onEnd: () => {
+        narration = null;
+        setPauseControl(null);         // nothing left to pause
+        clearInterval(narrationTimer); narrationTimer = null;
+        // The narration has run out. If the reader got through the whole
+        // passage, hand off to the SAME auto-finish path a live read uses so
+        // the demo shows the identical countdown; otherwise there is nothing
+        // left to wait for, so finish now.
+        if (reachedEndOfPassage()) startWrapUp();
+        else endSession();
+      },
+    });
+
+    narration.start();
+    startNarrationLoop();
+    // rAF is suspended in a backgrounded tab, and a demo that silently stops
+    // advancing when the reader switches tabs reads as a hang. This backstop
+    // drives the same tick() on a timer; tick() is idempotent, so the two
+    // cannot double-fire a word between them.
+    clearInterval(narrationTimer);
+    narrationTimer = setInterval(() => { if (narration) narration.tick(); }, 250);
+    setPauseControl('pause');
   });
-  replay.start();
-  setPauseControl('pause');
 }
 
 // ── Pause / resume the demo (defect 4: "no option to pause play demo") ──────
 //
-// Pausing has to stop BOTH clocks together or they desynchronise: the replay
-// clock (highlight + patience + the narration pump) and the audio channel.
+// Pausing is nearly free now that there is one clock: pausing the audio element
+// stops the clock, because the clock IS the element's position. All the button
+// has to do is stop the element and stop advancing wall time across the
+// intentional gaps — narration.pause() does both.
 // The button's own label is derived from one state variable rather than
 // toggled in place, so it cannot drift out of sync with what it does.
 let demoPaused = false;
@@ -1208,14 +1285,15 @@ function setPauseControl(state) {
 }
 
 function togglePause() {
-  if (!replay) return;               // no demo in flight; nothing to pause
+  if (!narration) return;            // no demo in flight; nothing to pause
   if (demoPaused) {
-    replay.resume();
-    audioResume();
+    audioResume();                   // clears audio.paused before anything plays
+    narration.resume();
+    startNarrationLoop();            // the rAF loop stopped itself on pause
     setPauseControl('pause');
     lastStatusKey = null;            // force the next tick to rewrite the status
   } else {
-    replay.pause();
+    narration.pause();
     audioPause();
     setPauseControl('resume');
     setStatus('Paused — press Resume demo to carry on.');
