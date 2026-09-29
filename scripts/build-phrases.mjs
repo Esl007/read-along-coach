@@ -105,8 +105,6 @@ function parseArgs(argv) {
 
 // ── talking to the python ───────────────────────────────────────────────────
 
-}
-
 function runSynth(request) {
   return new Promise((resolve, reject) => {
     if (!existsSync(pythonBin)) {
@@ -235,7 +233,7 @@ async function main() {
   const opts = parseArgs(process.argv.slice(2));
 
   const { SESSIONS } = await import(path.join(root, 'src/sessions/index.js'));
-  const { allPhrases, PHRASE_GAP_MS, PHRASE_MAX_WORDS } =
+  const { allPhrases, PHRASE_STALL_MS, PHRASE_MAX_WORDS } =
     await import(path.join(root, 'src/phrases.js'));
 
   const phrases = allPhrases(SESSIONS);
@@ -249,7 +247,8 @@ async function main() {
   const wordCount = phrases.reduce((n, p) => n + p.indices.length, 0);
   console.log(
     `Phrases: ${phrases.length} across ${SESSIONS.length} demo sessions ` +
-    `(${wordCount} word events; gap >= ${PHRASE_GAP_MS}ms splits, max ${PHRASE_MAX_WORDS} words/phrase).`
+    `(${wordCount} word events; clause boundaries and stalls >= ${PHRASE_STALL_MS}ms split, ` +
+    `max ${PHRASE_MAX_WORDS} words/phrase).`
   );
   console.log(
     `Rendering ONE UTTERANCE PER PHRASE with Kokoro-82M voice "${opts.voice}" at speed ${opts.speed}.`
@@ -277,6 +276,16 @@ async function main() {
   const badRate = [];
   let totalBytes = 0;
 
+  // ── Per-word timings: validate coverage, never half-adopt. ───────────────
+  // src/narration.js prefers real per-word offsets and falls back to weighting
+  // by character count. That fallback is fine, but it has to be VISIBLE: a
+  // manifest that silently carries timings for some clips and not others is
+  // exactly the kind of half-state that hides a regression. So every entry is
+  // checked against the phrase's own word count and the clip's real duration,
+  // a rejected entry is reported with its reason, and the counts are printed.
+  const synthWords = new Map(report.clips.map((c) => [c.id, c]));
+  const timingRejected = [];
+
   for (const file of onDisk) {
     const id = file.slice(0, -(EXT.length + 1));
     const phrase = byId.get(id);
@@ -296,11 +305,21 @@ async function main() {
     if (info.frames === 0) problems.push(`empty clip (0 frames): ${file}`);
 
     totalBytes += info.bytes;
-    manifest[id] = {
-      file,
-      seconds: Number(info.seconds.toFixed(3)),
-      text: phrase.text,
-    };
+    const seconds = Number(info.seconds.toFixed(3));
+    manifest[id] = { file, seconds, text: phrase.text };
+
+    const c = synthWords.get(id);
+    const words = c && Array.isArray(c.words) ? c.words : null;
+    const want = phrase.indices.length;
+    if (!words) {
+      timingRejected.push(`${id}: ${c && c.wordsSkipped ? c.wordsSkipped : 'synth reported none'}`);
+    } else if (words.length !== want) {
+      timingRejected.push(`${id}: ${words.length} offsets for ${want} words`);
+    } else if (!words.every((v, k) => Number.isFinite(v) && v >= 0 && v <= seconds * 1000 && (k === 0 || v >= words[k - 1]))) {
+      timingRejected.push(`${id}: offsets not monotonic within [0, ${(seconds * 1000).toFixed(0)}ms]`);
+    } else {
+      manifest[id].words = words;
+    }
   }
 
   // ── Cross-check every direction before writing anything. ────────────────
@@ -336,6 +355,21 @@ async function main() {
   console.log(`Orphans removed:   ${removed.length}${removed.length ? ` (${removed.join(', ')})` : ''}`);
   console.log(`Sample rate(s):    ${[...rates].join(', ')} Hz (expected ${EXPECTED_SAMPLE_RATE})`);
   console.log(`Total payload:     ${(totalBytes / 1024 / 1024).toFixed(2)} MB`);
+  {
+    const withWords = Object.values(manifest).filter((m) => m.words).length;
+    const n = Object.keys(manifest).length;
+    const covered = Object.entries(manifest)
+      .filter(([, m]) => m.words)
+      .reduce((a, [, m]) => a + m.words.length, 0);
+    console.log(
+      `Per-word timings:  ${withWords}/${n} clips (${n ? ((withWords / n) * 100).toFixed(0) : 0}%), ` +
+      `${covered}/${wordCount} word events covered; ${n - withWords} fall back to char weighting`
+    );
+    if (timingRejected.length) {
+      console.log(`  rejected timings (${timingRejected.length}):`);
+      for (const r of timingRejected) console.log(`    ${r}`);
+    }
+  }
   if (seconds.length) {
     console.log(
       `Durations:         min ${Math.min(...seconds).toFixed(3)}s / ` +

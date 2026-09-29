@@ -158,16 +158,26 @@ def db_to_amp(db):
 
 
 def trim_and_normalize(audio, sr):
-    """Silence-trim, de-click and loudness-match one clip. Returns float32."""
+    """Silence-trim, de-click and loudness-match one clip.
+
+    Returns (float32 audio, trim_start_samples). The offset is what phrase mode
+    needs in order to rebase the model's per-token timestamps: those are
+    relative to the RAW model output, and the clip that ships has had its
+    leading silence cut off, so an unadjusted timestamp is late by the amount
+    trimmed -- typically ~300ms on a Kokoro utterance, i.e. a whole word.
+
+    The DSP itself is unchanged; only the extra return value is new, so
+    word-mode clips are bit-identical to before.
+    """
     import numpy as np
 
     x = np.asarray(audio, dtype=np.float32).reshape(-1)
     if x.size == 0:
-        return x
+        return x, 0
 
     peak = float(np.max(np.abs(x)))
     if peak <= 0.0:
-        return x  # pure silence; caller will flag the zero duration
+        return x, 0  # pure silence; caller will flag the zero duration
 
     # Short-window RMS envelope. 10 ms windows are fine enough to catch the
     # real onset of a one-syllable word without chattering on the waveform.
@@ -179,13 +189,14 @@ def trim_and_normalize(audio, sr):
     thresh = peak * db_to_amp(SILENCE_FLOOR_DB)
     voiced = np.nonzero(env > thresh)[0]
     if voiced.size == 0:
-        return np.zeros(0, dtype=np.float32)
+        return np.zeros(0, dtype=np.float32), 0
 
     start = voiced[0] * win - int(sr * KEEP_HEAD_MS / 1000.0)
     end = (voiced[-1] + 1) * win + int(sr * KEEP_TAIL_MS / 1000.0)
-    y = x[max(0, start):min(x.size, end)].copy()
+    start = max(0, start)
+    y = x[start:min(x.size, end)].copy()
     if y.size == 0:
-        return np.zeros(0, dtype=np.float32)
+        return np.zeros(0, dtype=np.float32), 0
 
     # De-click: the trim almost always lands mid-waveform, which is an audible
     # step discontinuity at the buffer edge without these ramps.
@@ -207,7 +218,67 @@ def trim_and_normalize(audio, sr):
     if new_peak > ceiling:
         y *= ceiling / new_peak
 
-    return y.astype(np.float32)
+    return y.astype(np.float32), start
+
+
+# -- PER-WORD TIMINGS (phrase mode only) -------------------------------------
+#
+# src/narration.js drives the word highlight off the audio clock, so it wants to
+# know where inside a clip each word begins. Kokoro exposes per-token
+# timestamps, but they are PHONEME-GROUP aligned, not word aligned: misaki hands
+# espeak-ng a whole clause and espeak merges function words, so "the cat" can
+# come back as a single span, and a token can also be bare punctuation.
+#
+# So we do not trust them blindly. We keep the word-ish tokens in order and only
+# emit timings when we got EXACTLY one span per word of the phrase, in order.
+# Anything else reports words=None and the player falls back to weighting by
+# character count -- see distributeWords() in src/narration.js. The build script
+# counts both outcomes and prints them, so a silent half-adoption is not
+# possible.
+
+_WORDISH = "abcdefghijklmnopqrstuvwxyz0123456789'"
+
+
+def norm_token(s):
+    return "".join(c for c in str(s or "").lower() if c in _WORDISH)
+
+
+def word_offsets_ms(chunk_tokens, phrase_text, trim_offset_samples, sr, clip_seconds):
+    """One offset in ms per word of `phrase_text`, or None if unreliable.
+
+    `chunk_tokens` is a list of (tokens, chunk_start_seconds) pairs, because
+    KPipeline may split one utterance into several chunks and each chunk's
+    timestamps restart at zero.
+    """
+    want = [norm_token(w) for w in str(phrase_text).split()]
+    if not want or any(not w for w in want):
+        return None, "unnormalisable phrase text"
+
+    got = []
+    for tokens, chunk_start in chunk_tokens:
+        for t in tokens or []:
+            n = norm_token(getattr(t, "text", ""))
+            if not n:
+                continue  # punctuation-only token
+            ts = getattr(t, "start_ts", None)
+            if ts is None:
+                return None, "token without start_ts"
+            got.append((n, float(ts) + chunk_start))
+
+    if len(got) != len(want):
+        return None, f"token/word count mismatch ({len(got)} spans for {len(want)} words)"
+    if [g[0] for g in got] != want:
+        return None, "token texts do not match the phrase words"
+
+    trim_s = trim_offset_samples / float(sr)
+    out = []
+    prev = 0.0
+    for _, ts in got:
+        v = max(0.0, min(ts - trim_s, clip_seconds))
+        v = max(v, prev)      # monotonic; narration.js asserts this too
+        prev = v
+        out.append(round(v * 1000.0, 1))
+    return out, None
 
 
 FORMATS = {
@@ -298,32 +369,46 @@ def main():
             # them is not the thing src/phrases.js warns about, because the
             # split happened *inside* one model call with one prosodic plan.
             # What matters is that we never call the model per word.
-            chunks = [
-                np.asarray(res.audio, dtype=np.float32).reshape(-1)
-                for res in pipeline(text, voice=voice, speed=speed)
-                if res.audio is not None
-            ]
+            chunks = []
+            chunk_tokens = []
+            elapsed = 0.0
+            for res in pipeline(text, voice=voice, speed=speed):
+                if res.audio is None:
+                    continue
+                a = np.asarray(res.audio, dtype=np.float32).reshape(-1)
+                # Record the chunk's own start time BEFORE appending, because
+                # each chunk's token timestamps restart at zero.
+                chunk_tokens.append((getattr(res, "tokens", None), elapsed))
+                elapsed += a.size / float(sr)
+                chunks.append(a)
             if not chunks:
                 raise RuntimeError("model returned no audio")
             raw = np.concatenate(chunks)
-            y = trim_and_normalize(raw, sr)
+            y, trim_start = trim_and_normalize(raw, sr)
             if y.size == 0:
                 raise RuntimeError("clip was empty after silence trim")
 
             path = os.path.join(out_dir, f"{key}.{ext}")
             sf.write(path, y, sr, format=sf_format, subtype=sf_subtype)
-            clips.append(
-                {
-                    **meta,
-                    "file": f"{key}.{ext}",
-                    "ext": ext,
-                    "seconds": round(y.size / sr, 3),
-                    "rawSeconds": round(raw.size / sr, 3),
-                    "bytes": os.path.getsize(path),
-                    "sampleRate": sr,
-                    "chunks": len(chunks),
-                }
-            )
+            entry = {
+                **meta,
+                "file": f"{key}.{ext}",
+                "ext": ext,
+                "seconds": round(y.size / sr, 3),
+                "rawSeconds": round(raw.size / sr, 3),
+                "bytes": os.path.getsize(path),
+                "sampleRate": sr,
+                "chunks": len(chunks),
+            }
+            if mode == "phrase":
+                offs, why = word_offsets_ms(
+                    chunk_tokens, meta["text"], trim_start, sr, y.size / sr
+                )
+                entry["words"] = offs
+                if offs is None:
+                    entry["wordsSkipped"] = why
+                    log(f"[synth] {key}: no per-word timings ({why})")
+            clips.append(entry)
         except Exception as e:  # noqa: BLE001 - one bad item must not kill the build
             log(f"[synth] FAILED {key!r}: {e}")
             failures.append({**meta, "error": str(e)})
