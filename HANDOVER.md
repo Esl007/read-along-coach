@@ -1,7 +1,67 @@
 # Read-Along Coach — handover
 
-**Committed:** through `f865079` (audio/UX round) on top of `13860ee`.
-**Tests: 90 passing, 0 failing** (was 73, was 32).
+**Committed:** through `ba2ec53` (one-clock round) on top of `13860ee`.
+**Tests: 119 passing, 0 failing** (was 90, was 73, was 32).
+
+---
+
+## 0a. One-clock round — "unnatural pauses" + "highlights are way off"
+
+Both complaints had **one** cause. `buildNarrationPlan` ran two independent clocks:
+
+```js
+const at = Math.max(p.start, cursor);   // p.start = authored ms; cursor = real audio ms
+```
+
+The highlight, patience machine and progress ran on the demo's hand-authored event
+times; the audio ran on `cursor`, which accumulated real clip durations. Nothing ever
+reconciled them. A clip longer than its slot pushed `cursor` past `p.start` and that
+error was **cumulative** (highlight drift); a clip shorter than its authored gap left
+dead air (unnatural pauses). One cause, opposite signs.
+
+Measured on the old path, halting-early-reader: max |audio − highlight| **4200ms**,
+and **18990ms of inserted dead air** (24940ms in self-correcting-reader). The dead
+air, not the drift, was the dominant defect — which matches which complaint was loudest.
+
+**Fix: the audio is the clock.** `src/narration.js` lays clips end-to-end on their real
+measured durations with a 200ms inter-phrase pause, except genuine stalls, which keep
+the authored gap (capped) because the coach's intervention is timed off it. The driver
+advances `t` from the element's own `currentTime` on rAF and hands that same `t` to
+`onTick`, so **drift is impossible by construction, not by tuning.** Each segment start
+is pinned to its timeline value so a manifest/playback mismatch is absorbed at the
+boundary instead of accumulating. A 1500ms watchdog means a missing or stalled clip can
+never hang the demo. Total narration is **34% shorter**, all of it removed dead air.
+
+Phrase boundaries now come from the **language**, not from a 600ms gap threshold that
+had no linguistic meaning: clause punctuation (recovered by walking events against the
+passage, since a recogniser emits no punctuation), read from *both* sides because when
+the reader garbles the word carrying the period ("moo" for "move.") the seam is only
+visible from the word after. 48 clips → 40.
+
+Per-word timings inside a phrase are **real Kokoro token spans, 187/187 events covered**,
+with character weighting as a tested fallback.
+
+### Watch out for this if you change the narration rate
+Making audio the master clock made `scoringElapsedMs()` read the *narration* duration, so
+a "halting early reader" reported **81 WCPM** — a number that would have undermined the
+demo video. WCPM is a property of the reading, not of how fast we render it back, so a
+demo now scores on the recorded session's authored pace (`demoAuthoredEndMs`). Nothing is
+synchronised to that value — it is only the report's denominator — so it is not a
+reintroduced second clock. Verified back to 52 WCPM (halting) and 59 (self-correcting).
+
+### Why not AssemblyAI's own TTS
+Re-examined properly: `greeting` genuinely does accept arbitrary text, bypass the LLM and
+go straight to TTS, and it being immutable after `session.ready` does not matter because
+narration never needs to change mid-session. So it is viable. It is still the wrong trade:
+it returns an **opaque stream with no word timings**, which is strictly less information
+than the per-clip durations the sync fix is built on — the desync would become unfixable.
+It also costs the demo its stall, so the patience machine would have nothing to show, and
+it adds a live socket, the API key and $4.50/hr to something currently pre-rendered and
+free. There is no standalone TTS endpoint; Universal-TTS 4 is roadmapped for Q4 2026.
+
+The one variant worth keeping in mind: run the narration audio we already have through
+Universal-Streaming at build time for ground-truth word timestamps. That is AssemblyAI as
+a measurement instrument again, and it is the escalation if Kokoro's spans ever drift.
 **Pushed?** No — `git push` and `vercel deploy` are both blocked in the session that did this work
 by a session-level safety check tied to conversation history, not to the commands themselves.
 
