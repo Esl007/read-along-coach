@@ -92,6 +92,17 @@ nothing at runtime.
 **NOT verified:**
 - **Audible quality.** No speakers here, and the preview browser reports zero speech voices. I have
   never heard a single clip. Play one before filming.
+- **Live highlight smoothness.** The preview browser is headless (`document.hidden === true`), and
+  `requestAnimationFrame` never fires there — 0 callbacks in 3.1 s. Since the new render path paints
+  on rAF, the paint cadence is unmeasurable in this environment: a session logged 1 paint / 0 frames,
+  with all 31 class writes landing at once at the end. That is a harness artifact, **not** evidence
+  of a bug.
+  What the `window.__racRender` counters *do* prove, and which is the substance of the fix: the
+  passage is rebuilt **once per session** (`builds: 1`, not once per word), alignment is memoized
+  (`aligns: 32` for a 31-word passage), and exactly **one class write per span** occurs with no
+  redundant writes. Watch the highlight yourself in a real browser to confirm the cadence.
+  Side effect worth knowing: because painting is rAF-driven, the highlight will freeze in a
+  backgrounded tab and catch up on return. Harmless for reading, but don't mistake it for the old bug.
 - **The live microphone path.** Still never tested with a real mic — it is proven only by a synthetic
   AssemblyAI stream harness. Read a passage aloud on the deployed URL; if it stalls, note the
   specific word and check the console.
