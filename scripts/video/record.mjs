@@ -5,12 +5,13 @@ const OUT = process.argv[2] || 'rec';
 const DEMO = process.argv[3] || '1';
 fs.rmSync(OUT, { recursive: true, force: true }); fs.mkdirSync(OUT + '/frames', { recursive: true });
 
-const browser = await puppeteer.launch({ executablePath: '/usr/bin/google-chrome', headless: 'new',
-  args: ['--no-sandbox', '--autoplay-policy=no-user-gesture-required', '--hide-scrollbars'] });
-const page = await browser.newPage();
+// Device scale forced at BROWSER level: an emulated DSF (setViewport) still
+// yields CSS-pixel screencast frames, which made close-ups soft. This gives 2x.
+const browser = await puppeteer.launch({ executablePath: '/usr/bin/google-chrome', headless: 'new', defaultViewport: null,
+  args: ['--no-sandbox', '--autoplay-policy=no-user-gesture-required', '--hide-scrollbars', '--force-device-scale-factor=2', '--window-size=1600,987'] });
+const page = (await browser.pages())[0];
 const errs = [];
 page.on('pageerror', e => errs.push(String(e)));
-await page.setViewport({ width: 1600, height: 900, deviceScaleFactor: 1.2 });
 
 // Audio log + caption overlay, installed before app.js runs.
 await page.evaluateOnNewDocument(() => {
@@ -39,7 +40,10 @@ await page.evaluateOnNewDocument(() => {
     };
     pump();
   };
-  window.__showCaption = (text) => {
+  // Captions are LOGGED, not drawn: the video renders them in a band under the
+  // app window so they never cover the passage.
+  window.__showCaption = (text) => { window.__captions.push({ text, at: Date.now() }); };
+  window.__showCaptionInPage = (text) => {
     let el = document.getElementById('__cap');
     if (!el) {
       el = document.createElement('div'); el.id = '__cap';
@@ -89,7 +93,7 @@ cdp.on('Page.screencastFrame', async ({ data, metadata, sessionId }) => {
   cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
 });
 const t0 = Date.now();
-await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 92, maxWidth: 1920, maxHeight: 1080, everyNthFrame: 1 });
+await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 85, everyNthFrame: 1 });
 await new Promise(r => setTimeout(r, 1500));
 await page.evaluate(() => window.__setCaption('A recorded halting early reader. The highlight follows the voice.'));
 await page.click('#demoBtn');

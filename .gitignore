@@ -21,3 +21,6 @@ models/
 
 # Generated submission video (rebuild with scripts/video/)
 submission/*.mp4
+
+# Video build working folder (recordings, frames, voice-over)
+.videowork/
