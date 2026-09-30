@@ -554,10 +554,14 @@ function speak(word, { priority = false } = {}) {
 // text is usually identical, so re-writing it would churn the DOM (and the
 // badge's CSS animation) for nothing.
 let lastStatusKey = null;
-function setStatus(text, { playing = false } = {}) {
-  const key = `${playing ? 'P' : '-'}${text}`;
+// `tone` drives the patience pill's colour (styles.css keys off data-tone):
+// idle | listen | work | help | done | error. The pill mirrors the patience
+// machine, so the reader's state reads at the same glance as the words.
+function setStatus(text, { playing = false, tone = 'idle' } = {}) {
+  const key = `${playing ? 'P' : '-'}${tone}${text}`;
   if (key === lastStatusKey) return;
   lastStatusKey = key;
+  $('status').dataset.tone = tone;
   $('status').innerHTML = playing
     ? `<span class="playing"><span class="dot"></span>▶ Playing…</span> ${text}`
     : text;
@@ -605,6 +609,15 @@ let cachedOps = null;
 let cachedOpsRev = -1;     // transcriptRev cachedOps was computed at
 let paintedRev = -1;       // transcriptRev the DOM currently reflects
 let rafHandle = null;
+const suppliedRef = new Set(); // reference indexes the coach said aloud this session
+
+/** Stage header: level eyebrow + passage title above the reading surface. */
+function showPassageMeta(p) {
+  if (!p) return;
+  const lvl = $('passageLevel'), title = $('passageTitle');
+  if (lvl) lvl.textContent = `Level ${p.level}`;
+  if (title) title.textContent = p.title;
+}
 
 function buildPassageSpans() {
   const host = $('passage');
@@ -622,6 +635,8 @@ function buildPassageSpans() {
   });
   host.replaceChildren(frag);
   paintedRev = -1;
+  paintedProgress = -1;
+  paintProgress(0);
   racRender.builds++;
 }
 
@@ -732,6 +747,7 @@ function paintPassage() {
     const verdict = verdictByRef.get(i);
     if (verdict) cls += ' ' + verdict;
     if (provisionalRef.has(i)) cls += ' provisional';
+    if (suppliedRef.has(i)) cls += ' supplied';
     if (i === nextIdx) cls += ' next';
     if (spanClasses[i] !== cls) {       // only touch spans that actually changed
       wordSpans[i].className = cls;
@@ -740,6 +756,19 @@ function paintPassage() {
     }
   }
   paintedRev = transcriptRev;
+  paintProgress(verdictByRef.size);
+}
+
+// Reading-progress bar at the foot of the reading surface: words with a
+// verdict out of the passage length. Written only when the count changes.
+let paintedProgress = -1;
+function paintProgress(done) {
+  if (done === paintedProgress) return;
+  paintedProgress = done;
+  const total = wordSpans.length;
+  const fill = $('readProgressFill'), text = $('readProgressText');
+  if (fill) fill.style.width = total ? `${Math.round((done / total) * 100)}%` : '0%';
+  if (text) text.textContent = `${done} of ${total} words`;
 }
 
 // ── Shared pipeline: both live audio and replay feed these ──────────────────
@@ -757,7 +786,9 @@ function beginSession(passage, { live }) {
   transcript = createTranscript();
   patience = createPatience();
   transcriptRev = 0; cachedOps = null; cachedOpsRev = -1;
+  suppliedRef.clear();
   buildPassageSpans();      // fresh, neutral spans — the only DOM rebuild
+  showPassageMeta(passage);
   $('coach').textContent = '';
   $('report').style.display = 'none';
   lastStatusKey = null;
@@ -793,7 +824,7 @@ function onTick(now) {
   maybePaintWithoutFrame(); // rAF safety net for a backgrounded tab
   const s = patience.tick(now);
   if (maybeAutoFinish(now)) return; // owns the status line while wrapping up
-  if (s === State.WORKING) setStatus('Take your time… 💪', { playing: !isLiveSession });
+  if (s === State.WORKING) setStatus('Sounding it out — take your time', { playing: !isLiveSession, tone: 'work' });
   else if (s === State.STALLED) {
     const idx = nextExpectedIndex(currentOps()); // memoized — no re-alignment per tick
     if (idx < refWords.length) {
@@ -804,10 +835,22 @@ function onTick(now) {
       speak(word, { priority: true }); // always pre-empts demo narration, if any
       helpCount++;
       patience.helped(now);
+      setStatus(`Helping with one word: “${word}”`, { playing: !isLiveSession, tone: 'help' });
+      // Mark the word as supplied so the passage shows it was help, not an
+      // error. Forcing a repaint (not a new alignment) is enough: the class
+      // is layered on top of whatever verdict the aligner gives the word.
+      suppliedRef.add(idx);
+      paintedRev = -1;
+      scheduleRender();
       clearTimeout(coachClearTimer);
       coachClearTimer = setTimeout(() => { $('coach').textContent = ''; }, 6500);
     }
-  } else setStatus('Listening…', { playing: !isLiveSession });
+  } else if (!$('coach').textContent) {
+    // While the coach's bubble is on screen the pill keeps saying "Helping";
+    // flipping straight back to "Listening" one tick later hid the one state
+    // the reader most needs to see.
+    setStatus('Listening', { playing: !isLiveSession, tone: 'listen' });
+  }
 }
 
 /** Has the reader worked all the way through the reference passage? */
@@ -831,7 +874,7 @@ function maybeAutoFinish(now) {
     return true;
   }
   const secs = Math.max(1, Math.ceil((AUTO_FINISH_SILENCE_MS - silentMs) / 1000));
-  setStatus(`Nice reading — that's the whole passage. Finishing up in ${secs}…`);
+  setStatus(`That's the whole passage — finishing up in ${secs}…`, { tone: 'done' });
   return true;
 }
 
@@ -908,12 +951,12 @@ function endSession({ status, report = true } = {}) {
   teardown();
   $('startBtn').disabled = false; $('demoBtn').disabled = false; $('stopBtn').disabled = true;
   if (report) finishSession(elapsed, status);
-  else if (status) setStatus(status);
+  else if (status) setStatus(status, { tone: 'done' });
   return true;
 }
 
 function finishSession(elapsedMs, statusText) {
-  setStatus(statusText || 'Session finished.');
+  setStatus(statusText || 'Session finished.', { tone: 'done' });
 
   // Render one last time off the full (render) view so the passage doesn't
   // visually strip out a still-provisional trailing word the instant the
@@ -1020,7 +1063,7 @@ async function start() {
     };
     ws.onopen = async () => {
       if (token !== sessionToken) return;
-      setStatus('Listening… read out loud!');
+      setStatus('Listening — read out loud!', { tone: 'listen' });
       startedAt = performance.now();
       lastKnownStreamEnd = 0;
       lastKnownStreamEndWallAt = performance.now();
@@ -1039,7 +1082,7 @@ async function start() {
     };
     ws.onerror = () => {
       if (token !== sessionToken) return;
-      setStatus('Connection error — is the server running with an API key?');
+      setStatus('Connection error — is the server running with an API key?', { tone: 'error' });
     };
     ws.onclose = () => {
       // AssemblyAI may accept the connection but then close it (e.g. invalid/
@@ -1179,7 +1222,10 @@ function narrationFrame() {
   narrationRaf = null;
   if (!narration) return;
   narration.tick();
-  if (!narration.running) return;    // paused or finished: resume() restarts us
+  // tick() can finish the demo, and onEnd sets `narration` to null — so
+  // re-check it rather than reading .running off null (an uncaught TypeError
+  // at the end of every demo, found by the recording harness).
+  if (!narration || !narration.running) return; // paused or finished: resume() restarts us
   narrationRaf = requestAnimationFrame(narrationFrame);
 }
 
@@ -1192,7 +1238,7 @@ function startDemo() {
   const passage = PASSAGES.find(p => p.id === session.passageId);
   sel.value = PASSAGES.indexOf(passage);
   const token = beginSession(passage, { live: false });
-  setStatus(`Replaying “${session.title}”…`, { playing: true });
+  setStatus(`Replaying “${session.title}”…`, { playing: true, tone: 'listen' });
 
   // Narration is UNCONDITIONAL (defect 3): clicking Play demo means "read it
   // to me", so nothing here consults ttsMuted — that toggle now governs only
@@ -1335,9 +1381,9 @@ function sparkline(values, w = 220, h = 40) {
     `${(i / (values.length - 1)) * (w - 8) + 4},${h - 4 - ((v - min) / (max - min || 1)) * (h - 8)}`);
   const last = pts[pts.length - 1].split(',');
   return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-label="WCPM trend">` +
-    `<polyline points="${pts.join(' ')}" fill="none" stroke="#ff5a3c" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>` +
-    pts.slice(0, -1).map(p => `<circle cx="${p.split(',')[0]}" cy="${p.split(',')[1]}" r="2.5" fill="#ff5a3c" fill-opacity=".55"/>`).join('') +
-    `<circle cx="${last[0]}" cy="${last[1]}" r="4" fill="#1f9d7c" stroke="#fffdf8" stroke-width="1.5"/>` +
+    `<polyline points="${pts.join(' ')}" fill="none" stroke="#3346C9" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>` +
+    pts.slice(0, -1).map(p => `<circle cx="${p.split(',')[0]}" cy="${p.split(',')[1]}" r="2.5" fill="#3346C9" fill-opacity=".45"/>`).join('') +
+    `<circle cx="${last[0]}" cy="${last[1]}" r="4" fill="#1B2330" stroke="#FFFDF8" stroke-width="1.5"/>` +
     `</svg>`;
 }
 
@@ -1389,6 +1435,7 @@ sel.onchange = () => {
   if (sessionActive) return; // can't swap the passage out from under a live read
   refWords = words(PASSAGES[sel.value]);
   buildPassageSpans();
+  showPassageMeta(PASSAGES[sel.value]);
 };
 
 // Releasing the mic, socket and audio context on the way out matters: a
@@ -1410,5 +1457,5 @@ window.__racSession = {
   get transcriptRev() { return transcriptRev; },
 };
 
-refWords = words(PASSAGES[0]); buildPassageSpans();
+refWords = words(PASSAGES[0]); buildPassageSpans(); showPassageMeta(PASSAGES[0]);
 renderHistory();

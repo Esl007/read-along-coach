@@ -7,155 +7,133 @@
 <meta name="description" content="A patient reading coach for early readers and ESL learners. Real-time word-level feedback that only helps when you're truly stuck.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <a class="skip-link" href="#passage">Skip to the passage</a>
 
-  <!-- ══ app bar ═══════════════════════════════════════════════════════════ -->
+  <!-- A · App bar -->
   <header class="appbar">
     <div class="appbar-inner">
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 40 40" width="40" height="40" role="presentation">
-            <rect width="40" height="40" rx="12" fill="#ff5a3c"/>
-            <path d="M8 12.5c3.6-1.6 7.2-1.6 10.8 0v16c-3.6-1.6-7.2-1.6-10.8 0v-16Z" fill="#fffdf8"/>
-            <path d="M21.2 12.5c1.5-.7 3-1.1 4.5-1.2v16c-1.5.1-3 .5-4.5 1.2v-16Z" fill="#fffdf8" opacity=".78"/>
-            <path d="M28.7 14.6a6.6 6.6 0 0 1 0 10.8" stroke="#fffdf8" stroke-width="2.4" fill="none" stroke-linecap="round"/>
-            <path d="M32.6 11.2a11 11 0 0 1 0 17.6" stroke="#fffdf8" stroke-width="2.4" fill="none" stroke-linecap="round" opacity=".55"/>
-          </svg>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5.5C2 4.7 2.7 4 3.5 4H9a3 3 0 0 1 3 3v13a2.5 2.5 0 0 0-2.5-2.5H3.5A1.5 1.5 0 0 1 2 16z"/><path d="M22 5.5c0-.8-.7-1.5-1.5-1.5H15a3 3 0 0 0-3 3v13a2.5 2.5 0 0 1 2.5-2.5h6a1.5 1.5 0 0 0 1.5-1.5z"/></svg>
         </span>
-        <span class="brand-text">
-          <span class="brand-name">Read-Along <em>Coach</em></span>
-          <span class="brand-sub">Patient reading practice for early readers &amp; ESL learners</span>
-        </span>
+        <span class="brand-name">Read-Along Coach</span>
+        <span class="brand-sub">Patient reading practice for early readers &amp; ESL learners</span>
       </div>
-      <div class="appbar-meta">
-        <span class="chip chip-tech">
-          <span class="chip-dot" aria-hidden="true"></span>
-          AssemblyAI Universal-Streaming
-        </span>
-      </div>
+      <span class="tech-badge"><span class="tech-dot" aria-hidden="true"></span>AssemblyAI Universal-Streaming</span>
     </div>
   </header>
 
-  <!-- ══ layout ════════════════════════════════════════════════════════════ -->
   <main class="layout">
 
-    <!-- ── left rail: session setup ─────────────────────────────────────── -->
+    <!-- B · Left rail, in the order of use -->
     <aside class="rail">
-      <div class="card card-setup">
-        <div class="panel">
-          <h2 class="panel-title">Read aloud</h2>
-          <label class="field-label" for="passageSelect">Passage</label>
-          <select id="passageSelect"></select>
-          <button id="startBtn" class="btn btn-primary btn-block">
-            <span class="btn-ico" aria-hidden="true">●</span> Start reading
+      <section class="card panel" aria-labelledby="h-read">
+        <h2 class="panel-title" id="h-read">Read aloud</h2>
+        <label class="field-label" for="passageSelect">Passage</label>
+        <select id="passageSelect"></select>
+        <button id="startBtn" class="btn btn-primary">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg>
+          Start reading
+        </button>
+        <button id="stopBtn" class="btn btn-quiet" disabled>Finish session</button>
+        <p class="hint">I listen the whole way through and only step in when you're genuinely stuck.</p>
+      </section>
+
+      <section class="card panel" aria-labelledby="h-demo">
+        <h2 class="panel-title" id="h-demo">Watch a demo</h2>
+        <label class="field-label" for="demoSelect">Recorded reader</label>
+        <select id="demoSelect"></select>
+        <div class="btn-row">
+          <button id="demoBtn" class="btn btn-ink">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg>
+            Play demo
           </button>
-          <button id="stopBtn" class="btn btn-quiet btn-block" disabled>Finish session</button>
-          <p class="hint">I listen the whole way through and only step in when you're genuinely stuck.</p>
+          <button id="pauseBtn" class="btn btn-outline" aria-pressed="false" disabled>Pause demo</button>
         </div>
+        <p class="hint">Narrated in full phrases. Pause stops the voice and the highlight together.</p>
+      </section>
 
-        <div class="panel">
-          <h2 class="panel-title">Demo replay</h2>
-          <label class="field-label" for="demoSelect">Recorded session</label>
-          <select id="demoSelect" title="Demo replay"></select>
-          <button id="demoBtn" class="btn btn-ink btn-block">
-            <span class="btn-ico" aria-hidden="true">▶</span> Play demo
-          </button>
-          <button id="pauseBtn" class="btn btn-quiet btn-block" aria-pressed="false" disabled>Pause demo</button>
-          <p class="hint demo-note">A real-time replay of a recorded reading session, read aloud phrase by phrase. Press <em>Pause demo</em> to stop the voice and the highlight together.</p>
-        </div>
+      <section class="card panel" aria-labelledby="h-voice">
+        <h2 class="panel-title" id="h-voice">Coach voice</h2>
+        <label class="check">
+          <input type="checkbox" id="muteToggle" checked>
+          <span>Speak help while I read</span>
+        </label>
+        <p class="hint">Live reads only — demos always read aloud.</p>
+        <p class="hint audio-diagnostic" id="audioDiagnostic">Checking available audio…</p>
+      </section>
 
-        <div class="panel">
-          <h2 class="panel-title">Coach voice</h2>
-          <label class="switch" title="Mute the coach's spoken help during a live read. Demo replays always read aloud.">
-            <input type="checkbox" id="muteToggle" checked>
-            <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
-            <span class="switch-label">Speak help while I read <small>live reads only — demos always narrate</small></span>
-          </label>
-          <p class="hint audio-diagnostic" id="audioDiagnostic">Checking available audio…</p>
-        </div>
-      </div>
-
-      <div class="card card-how">
-        <h2 class="panel-title">How the coach behaves</h2>
+      <section class="card panel panel-how" aria-labelledby="h-how">
+        <h2 class="panel-title" id="h-how">How the coach behaves</h2>
         <ul class="how-list">
           <li><b>Patience first.</b> A pause is thinking time, not a mistake. Help only arrives after a real stall.</li>
           <li><b>Honest scoring.</b> If the microphone wasn't clear, the word is marked unclear — never wrong.</li>
           <li><b>Private by default.</b> Progress is kept on this device only.</li>
         </ul>
-      </div>
+      </section>
     </aside>
 
-    <!-- ── main stage ───────────────────────────────────────────────────── -->
     <section class="stage">
-
-      <div class="card reader">
-        <div class="reader-head">
-          <span class="reader-eyebrow">Reading surface</span>
-          <div class="legend-bar" aria-label="What the word colours mean">
-            <span class="key k-correct"><i aria-hidden="true"></i>Correct</span>
-            <span class="key k-next"><i aria-hidden="true"></i>Read next</span>
-            <span class="key k-sub"><i aria-hidden="true"></i>Different word</span>
-            <span class="key k-skip"><i aria-hidden="true"></i>Skipped</span>
-            <span class="key k-unk"><i aria-hidden="true"></i>Couldn't hear</span>
-          </div>
+      <!-- C · Title left, patience pill right -->
+      <div class="stage-head">
+        <div class="stage-title">
+          <span class="eyebrow" id="passageLevel">Level 1</span>
+          <h1 id="passageTitle">Choose a passage</h1>
         </div>
+        <div id="status" class="pill" data-tone="idle" aria-live="polite">Ready when you are</div>
+      </div>
 
+      <!-- D · The reading surface -->
+      <div class="card reader">
         <div id="passage"></div>
-
-        <div id="coach" aria-live="polite"></div>
-
         <div class="reader-foot">
-          <div id="status" aria-live="polite">Ready.</div>
+          <div id="coach" aria-live="polite"></div>
+          <div class="read-progress">
+            <div class="read-progress-track"><div class="read-progress-fill" id="readProgressFill"></div></div>
+            <span id="readProgressText">0 of 0 words</span>
+          </div>
         </div>
       </div>
 
-      <!-- ── results ────────────────────────────────────────────────────── -->
-      <div class="results">
+      <!-- E · Legend -->
+      <div class="legend-bar" aria-label="What the word colours mean">
+        <span class="key"><span class="w correct">sat</span>Correct</span>
+        <span class="key"><span class="w next">sun</span>Read next</span>
+        <span class="key"><span class="w supplied">The</span>Supplied by coach</span>
+        <span class="key"><span class="w substituted">ran</span>Different word</span>
+        <span class="key"><span class="w skipped">big</span>Skipped</span>
+        <span class="key"><span class="w unscorable">move</span>Couldn't hear — never counted</span>
+      </div>
 
-        <div id="report">
+      <!-- F · Report, G · Progress -->
+      <div class="results">
+        <div id="report" class="card">
           <div class="card-head">
             <h2>Session report</h2>
-            <span class="badge badge-done">Scored</span>
+            <span class="badge">Scored</span>
           </div>
           <div class="stat-row">
-            <div class="stat stat-hero">
-              <b id="rWcpm">–</b>
-              <span class="label">Words correct / min</span>
-            </div>
-            <div class="stat">
-              <b id="rAcc">–</b>
-              <span class="label">Accuracy</span>
-            </div>
-            <div class="stat">
-              <b id="rHelp">–</b>
-              <span class="label">Words supplied</span>
-            </div>
+            <div class="stat stat-hero"><b id="rWcpm">–</b><span class="label">Words correct / min</span></div>
+            <div class="stat"><b id="rAcc">–</b><span class="label">Accuracy</span></div>
+            <div class="stat stat-help"><b id="rHelp">–</b><span class="label">Words supplied</span></div>
           </div>
           <div class="practice">
-            <span class="practice-label">Words to practice</span>
+            <span class="practice-label">Practise these next time</span>
             <span class="practice-words" id="rStruggle">–</span>
           </div>
-          <p class="legend">Grey italic words were unscorable — the microphone audio wasn't clear enough to judge, so they don't count against the reader.</p>
+          <p class="legend">Grey italic words couldn't be heard clearly, so they don't count against the reader.</p>
         </div>
 
         <div class="card empty-state" data-empty-for="report">
-          <div class="empty-mark" aria-hidden="true">📈</div>
-          <div class="empty-body">
-            <h2 class="panel-title">No session scored yet</h2>
-            <p class="hint">Press <b>Start reading</b> — or play a recorded demo — and this becomes a scored report.</p>
-            <div class="ghost-row" aria-hidden="true">
-              <div class="ghost"><b>—</b><span>Words correct / min</span></div>
-              <div class="ghost"><b>—</b><span>Accuracy</span></div>
-              <div class="ghost"><b>—</b><span>Words supplied</span></div>
-            </div>
-          </div>
+          <h2 class="panel-title">No session scored yet</h2>
+          <p class="hint">Press <b>Start reading</b> or <b>Play demo</b> — the report lands here when the reader finishes.</p>
         </div>
 
-        <div id="progress">
+        <div id="progress" class="card">
           <div class="card-head">
             <h2>Progress</h2>
             <span class="badge">This device</span>
@@ -170,13 +148,9 @@
         </div>
 
         <div class="card empty-state" data-empty-for="progress">
-          <div class="empty-mark" aria-hidden="true">🗓️</div>
-          <div class="empty-body">
-            <h2 class="panel-title">Progress starts after session one</h2>
-            <p class="hint">Finish a read and the words-correct-per-minute trend, plus every past session, lands here.</p>
-          </div>
+          <h2 class="panel-title">Progress starts after session one</h2>
+          <p class="hint">Finish a read and the words-correct-per-minute trend, plus every past session, appears here.</p>
         </div>
-
       </div>
     </section>
   </main>
