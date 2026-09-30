@@ -1,469 +1,469 @@
 {
   "esl-careful-0": {
     "file": "esl-careful-0.wav",
-    "seconds": 2.29,
+    "seconds": 2.45,
     "text": "preparing thoroughly for an interview means",
     "words": [
-      0,
-      587.5,
-      1112.5,
-      1237.5,
-      1325,
-      1675
+      35,
+      635,
+      1160,
+      1272.5,
+      1360,
+      1760
     ]
   },
   "esl-careful-10": {
     "file": "esl-careful-10.wav",
-    "seconds": 1.91,
+    "seconds": 2.11,
     "text": "rehearsing concise answers",
     "words": [
-      20,
-      645,
-      1195
+      65,
+      715,
+      1315
     ]
   },
   "esl-careful-13": {
     "file": "esl-careful-13.wav",
-    "seconds": 2.23,
+    "seconds": 2.39,
     "text": "and anticipating difficult questions",
     "words": [
-      10,
-      147.5,
-      1022.5,
-      1435
+      75,
+      212.5,
+      1075,
+      1500
     ]
   },
   "esl-careful-17": {
     "file": "esl-careful-17.wav",
-    "seconds": 2.17,
+    "seconds": 2.27,
     "text": "confidence grows from preparation",
     "words": [
-      0,
-      707.5,
-      1120,
+      20,
+      670,
+      1095,
       1270
     ]
   },
   "esl-careful-21": {
     "file": "esl-careful-21.wav",
-    "seconds": 1.03,
+    "seconds": 1.3,
     "text": "not from luck",
     "words": [
-      65,
-      290,
-      490
+      95,
+      370,
+      570
     ]
   },
   "esl-careful-6": {
     "file": "esl-careful-6.wav",
-    "seconds": 0.56,
+    "seconds": 0.6,
     "text": "re",
     "words": [
-      75
+      115
     ]
   },
   "esl-careful-7": {
     "file": "esl-careful-7.wav",
-    "seconds": 1.84,
+    "seconds": 2.03,
     "text": "researching the organisation",
     "words": [
-      20,
-      670,
-      820
+      40,
+      765,
+      915
     ]
   },
   "esl-plural-drop-0": {
     "file": "esl-plural-drop-0.wav",
-    "seconds": 0.77,
+    "seconds": 0.67,
     "text": "when a",
     "words": [
-      50,
-      287.5
+      0,
+      207.5
     ]
   },
   "esl-plural-drop-16": {
     "file": "esl-plural-drop-16.wav",
-    "seconds": 2.38,
+    "seconds": 2.16,
     "text": "the angle of its dance point toward the sun",
     "words": [
-      5,
-      155,
-      555,
-      642.5,
-      830,
-      1180,
-      1542.5,
-      1817.5,
-      1917.5
+      0,
+      137.5,
+      487.5,
+      562.5,
+      700,
+      1025,
+      1300,
+      1562.5,
+      1662.5
     ]
   },
   "esl-plural-drop-2": {
     "file": "esl-plural-drop-2.wav",
-    "seconds": 0.61,
+    "seconds": 0.55,
     "text": "hon",
     "words": [
-      65
+      0
     ]
   },
   "esl-plural-drop-25": {
     "file": "esl-plural-drop-25.wav",
-    "seconds": 2.3,
+    "seconds": 2.08,
     "text": "the length tell the other how far to travel",
     "words": [
-      15,
-      115,
-      527.5,
-      752.5,
-      890,
-      1227.5,
-      1465,
-      1627.5,
-      1715
+      0,
+      65,
+      365,
+      577.5,
+      665,
+      965,
+      1165,
+      1327.5,
+      1415
     ]
   },
   "esl-plural-drop-3": {
     "file": "esl-plural-drop-3.wav",
-    "seconds": 1.92,
+    "seconds": 1.65,
     "text": "honeybee find a field of clove",
     "words": [
-      30,
-      542.5,
-      817.5,
-      892.5,
-      1192.5,
-      1305
+      0,
+      340,
+      577.5,
+      640,
+      902.5,
+      990
     ]
   },
   "esl-plural-drop-34": {
     "file": "esl-plural-drop-34.wav",
-    "seconds": 3.97,
+    "seconds": 3.58,
     "text": "hundred of bee leave on direction given without a single word",
     "words": [
-      20,
-      445,
-      595,
-      870,
-      1207.5,
-      1320,
-      2245,
-      2620,
-      2995,
-      3120,
-      3520
+      0,
+      402.5,
+      515,
+      727.5,
+      1002.5,
+      1140,
+      1790,
+      2140,
+      2490,
+      2615,
+      3015
     ]
   },
   "esl-plural-drop-9": {
     "file": "esl-plural-drop-9.wav",
-    "seconds": 1.93,
+    "seconds": 1.61,
     "text": "it return to the hive and dance",
     "words": [
-      10,
-      110,
-      560,
-      647.5,
-      772.5,
-      1210,
-      1335
+      0,
+      62.5,
+      425,
+      512.5,
+      600,
+      887.5,
+      1000
     ]
   },
   "fluent-adult-0": {
     "file": "fluent-adult-0.wav",
-    "seconds": 4.33,
+    "seconds": 3.73,
     "text": "The lighthouse keeper climbed the spiral staircase every evening at dusk.",
     "words": [
-      15,
-      115,
-      590,
-      1265,
-      1602.5,
-      1690,
-      2115,
-      2940,
-      3277.5,
-      3665,
-      3765
+      0,
+      65,
+      540,
+      915,
+      1202.5,
+      1302.5,
+      1740,
+      2402.5,
+      2727.5,
+      3115,
+      3215
     ]
   },
   "fluent-adult-11": {
     "file": "fluent-adult-11.wav",
-    "seconds": 3.53,
+    "seconds": 3,
     "text": "From the top she could see fishing boats returning to the harbor,",
     "words": [
-      40,
-      177.5,
-      277.5,
-      715,
-      840,
-      1015,
-      1240,
-      1665,
-      2315,
-      2840,
-      2927.5,
-      3015
+      0,
+      92.5,
+      192.5,
+      555,
+      680,
+      855,
+      1080,
+      1480,
+      1855,
+      2330,
+      2417.5,
+      2505
     ]
   },
   "fluent-adult-23": {
     "file": "fluent-adult-23.wav",
-    "seconds": 3.29,
+    "seconds": 3.01,
     "text": "their lanterns swaying like fireflies on the dark water.",
     "words": [
       0,
-      140,
-      765,
-      1265,
-      1502.5,
-      2315,
-      2427.5,
-      2515,
-      2815
+      130,
+      617.5,
+      1055,
+      1292.5,
+      2055,
+      2167.5,
+      2255,
+      2555
     ]
   },
   "fluent-adult-32": {
     "file": "fluent-adult-32.wav",
-    "seconds": 2.78,
+    "seconds": 2.49,
     "text": "Her light guided each one safely past the rocks.",
     "words": [
       0,
-      145,
-      482.5,
-      870,
-      1095,
-      1345,
-      1795,
-      2107.5,
-      2195
+      70,
+      345,
+      695,
+      920,
+      1157.5,
+      1595,
+      1907.5,
+      1995
     ]
   },
   "halting-early-reader-0": {
     "file": "halting-early-reader-0.wav",
-    "seconds": 0.52,
+    "seconds": 0.465,
     "text": "the",
     "words": [
-      50
+      60
     ]
   },
   "halting-early-reader-1": {
     "file": "halting-early-reader-1.wav",
-    "seconds": 0.6,
+    "seconds": 0.575,
     "text": "ca",
     "words": [
-      40
+      60
     ]
   },
   "halting-early-reader-10": {
     "file": "halting-early-reader-10.wav",
-    "seconds": 0.59,
+    "seconds": 0.566,
     "text": "wa",
     "words": [
-      75
+      115
     ]
   },
   "halting-early-reader-11": {
     "file": "halting-early-reader-11.wav",
-    "seconds": 0.67,
+    "seconds": 0.669,
     "text": "warm",
     "words": [
-      100
+      115
     ]
   },
   "halting-early-reader-12": {
     "file": "halting-early-reader-12.wav",
-    "seconds": 1.26,
+    "seconds": 1.245,
     "text": "the cat was happy",
     "words": [
-      25,
-      137.5,
-      437.5,
-      600
-    ]
-  },
-  "halting-early-reader-16": {
-    "file": "halting-early-reader-16.wav",
-    "seconds": 1.17,
-    "text": "a dog run by",
-    "words": [
-      20,
-      107.5,
-      470,
-      720
-    ]
-  },
-  "halting-early-reader-2": {
-    "file": "halting-early-reader-2.wav",
-    "seconds": 1.29,
-    "text": "cat sat in the sun",
-    "words": [
-      20,
-      295,
-      557.5,
-      632.5,
-      757.5
-    ]
-  },
-  "halting-early-reader-20": {
-    "file": "halting-early-reader-20.wav",
-    "seconds": 1.3,
-    "text": "the cat did not moo",
-    "words": [
-      25,
-      137.5,
-      450,
-      587.5,
-      825
-    ]
-  },
-  "halting-early-reader-25": {
-    "file": "halting-early-reader-25.wav",
-    "seconds": 1.66,
-    "text": "the cat was too warm to care",
-    "words": [
-      25,
-      125,
-      387.5,
-      562.5,
-      775,
-      1050,
-      1175
-    ]
-  },
-  "halting-early-reader-7": {
-    "file": "halting-early-reader-7.wav",
-    "seconds": 0.95,
-    "text": "the sun was",
-    "words": [
-      20,
-      170,
-      445
-    ]
-  },
-  "self-correcting-reader-0": {
-    "file": "self-correcting-reader-0.wav",
-    "seconds": 0.99,
-    "text": "we built a",
-    "words": [
-      50,
-      175,
-      512.5
-    ]
-  },
-  "self-correcting-reader-15": {
-    "file": "self-correcting-reader-15.wav",
-    "seconds": 0.61,
-    "text": "mo",
-    "words": [
-      90
-    ]
-  },
-  "self-correcting-reader-16": {
-    "file": "self-correcting-reader-16.wav",
-    "seconds": 1.04,
-    "text": "moat around it",
-    "words": [
-      95,
-      320,
-      720
-    ]
-  },
-  "self-correcting-reader-19": {
-    "file": "self-correcting-reader-19.wav",
-    "seconds": 3.35,
-    "text": "my cousin wanted warned me that the tide was coming in",
-    "words": [
-      5,
-      192.5,
-      580,
-      942.5,
-      1305,
-      1842.5,
-      2017.5,
-      2117.5,
-      2517.5,
-      2680,
-      2980
-    ]
-  },
-  "self-correcting-reader-3": {
-    "file": "self-correcting-reader-3.wav",
-    "seconds": 0.68,
-    "text": "sand",
-    "words": [
-      100
-    ]
-  },
-  "self-correcting-reader-30": {
-    "file": "self-correcting-reader-30.wav",
-    "seconds": 1.04,
-    "text": "i told her the",
-    "words": [
       45,
-      220,
+      182.5,
       482.5,
       645
     ]
   },
+  "halting-early-reader-16": {
+    "file": "halting-early-reader-16.wav",
+    "seconds": 1.294,
+    "text": "a dog run by",
+    "words": [
+      60,
+      172.5,
+      585,
+      835
+    ]
+  },
+  "halting-early-reader-2": {
+    "file": "halting-early-reader-2.wav",
+    "seconds": 1.335,
+    "text": "cat sat in the sun",
+    "words": [
+      5,
+      317.5,
+      592.5,
+      667.5,
+      805
+    ]
+  },
+  "halting-early-reader-20": {
+    "file": "halting-early-reader-20.wav",
+    "seconds": 1.275,
+    "text": "the cat did not moo",
+    "words": [
+      40,
+      152.5,
+      490,
+      627.5,
+      840
+    ]
+  },
+  "halting-early-reader-25": {
+    "file": "halting-early-reader-25.wav",
+    "seconds": 1.736,
+    "text": "the cat was too warm to care",
+    "words": [
+      30,
+      117.5,
+      417.5,
+      592.5,
+      805,
+      1080,
+      1217.5
+    ]
+  },
+  "halting-early-reader-7": {
+    "file": "halting-early-reader-7.wav",
+    "seconds": 1.04,
+    "text": "the sun was",
+    "words": [
+      35,
+      185,
+      560
+    ]
+  },
+  "self-correcting-reader-0": {
+    "file": "self-correcting-reader-0.wav",
+    "seconds": 1.064,
+    "text": "we built a",
+    "words": [
+      60,
+      247.5,
+      610
+    ]
+  },
+  "self-correcting-reader-15": {
+    "file": "self-correcting-reader-15.wav",
+    "seconds": 0.57,
+    "text": "mo",
+    "words": [
+      105
+    ]
+  },
+  "self-correcting-reader-16": {
+    "file": "self-correcting-reader-16.wav",
+    "seconds": 1.118,
+    "text": "moat around it",
+    "words": [
+      105,
+      380,
+      842.5
+    ]
+  },
+  "self-correcting-reader-19": {
+    "file": "self-correcting-reader-19.wav",
+    "seconds": 3.983,
+    "text": "my cousin wanted warned me that the tide was coming in",
+    "words": [
+      40,
+      252.5,
+      777.5,
+      1202.5,
+      1640,
+      2215,
+      2390,
+      2540,
+      3027.5,
+      3202.5,
+      3590
+    ]
+  },
+  "self-correcting-reader-3": {
+    "file": "self-correcting-reader-3.wav",
+    "seconds": 0.723,
+    "text": "sand",
+    "words": [
+      110
+    ]
+  },
+  "self-correcting-reader-30": {
+    "file": "self-correcting-reader-30.wav",
+    "seconds": 1.041,
+    "text": "i told her the",
+    "words": [
+      60,
+      247.5,
+      522.5,
+      685
+    ]
+  },
   "self-correcting-reader-34": {
     "file": "self-correcting-reader-34.wav",
-    "seconds": 1.16,
+    "seconds": 1.268,
     "text": "walls were strong",
     "words": [
-      80,
-      417.5,
-      555
+      85,
+      447.5,
+      597.5
     ]
   },
   "self-correcting-reader-37": {
     "file": "self-correcting-reader-37.wav",
-    "seconds": 1.04,
+    "seconds": 1.078,
     "text": "the next wave",
     "words": [
-      30,
-      105,
-      455
+      45,
+      145,
+      495
     ]
   },
   "self-correcting-reader-4": {
     "file": "self-correcting-reader-4.wav",
-    "seconds": 1.78,
+    "seconds": 1.919,
     "text": "sandcastle close to the water",
     "words": [
-      65,
-      715,
-      1065,
-      1152.5,
-      1240
+      75,
+      787.5,
+      1200,
+      1287.5,
+      1375
     ]
   },
   "self-correcting-reader-40": {
     "file": "self-correcting-reader-40.wav",
-    "seconds": 0.66,
+    "seconds": 0.622,
     "text": "pro",
     "words": [
-      40
+      45
     ]
   },
   "self-correcting-reader-41": {
     "file": "self-correcting-reader-41.wav",
-    "seconds": 1.5,
+    "seconds": 1.463,
     "text": "proved my cousin right",
     "words": [
-      5,
-      405,
-      580,
-      955
+      0,
+      390,
+      577.5,
+      965
     ]
   },
   "self-correcting-reader-9": {
     "file": "self-correcting-reader-9.wav",
-    "seconds": 1.61,
+    "seconds": 1.673,
     "text": "with four towers and a deep",
     "words": [
-      15,
-      190,
-      415,
-      940,
-      1052.5,
-      1115
+      45,
+      232.5,
+      507.5,
+      1045,
+      1157.5,
+      1220
     ]
   }
 }

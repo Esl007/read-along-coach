@@ -17,10 +17,19 @@
 // the model ONCE PER PHRASE with the whole phrase text. It must never loop
 // over words — that is the bug it exists to fix.
 //
-// ── SAME VOICE AS THE WORD CLIPS ───────────────────────────────────────────
-// VOICE/SPEED below are pinned to the same values build-voices.mjs uses
-// (af_heart @ 0.85). The narrator and the coach are supposed to be audibly
-// the same person; if these drift apart, the demo sounds like two speakers.
+// ── EACH READER HAS THEIR OWN VOICE — NEVER THE COACH'S ───────────────────
+// A demo session is a recording of a READER. The coach is someone else: its
+// help word comes from the single-word clips (af_heart, build-voices.mjs).
+// This file used to pin the phrases to af_heart as well, on the theory that
+// narrator and coach should sound like one person. That was backwards: when
+// the stumbling child and the patient coach share a voice, the demo sounds
+// like the coach tripping over its own passage, and the one moment that
+// matters -- a different person stepping in with one word -- is inaudible.
+// READERS below gives every session its own voice. The two children are
+// af_bella pitched up 4 semitones with duration preserved (so Kokoro's
+// per-word timings stay valid) and read a little slower; the adults are
+// three distinct adult voices. None is af_heart (the coach) or am_michael
+// (the submission video's narrator).
 //
 // ── DIVISION OF LABOUR ─────────────────────────────────────────────────────
 // This file owns the phrase derivation (it must — the grouping lives in the
@@ -60,7 +69,7 @@
 //
 // Usage: npm run build:phrases [-- --voice=af_heart --speed=0.85]
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   mkdirSync,
   writeFileSync,
@@ -69,6 +78,7 @@ import {
   statSync,
   unlinkSync,
   existsSync,
+  renameSync,
 } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -229,6 +239,39 @@ function pruneOrphans(keepIds) {
 
 // ── main ────────────────────────────────────────────────────────────────────
 
+/**
+ * Who is reading each demo session. Voices must stay distinct from the coach
+ * (af_heart) -- see the header. `pitch` is a frequency ratio applied after
+ * synthesis with duration preserved; 1.2599 = +4 semitones (children speak around 250-300 Hz; +3 left them
+ * measurably overlapping the coach, 245 vs 218 Hz median).
+ */
+const READERS = {
+  'halting-early-reader':   { voice: 'af_bella',  speed: 0.8,  pitch: 1.2599, who: 'child' },
+  'self-correcting-reader': { voice: 'af_bella',  speed: 0.8,  pitch: 1.2599, who: 'child' },
+  'fluent-adult':           { voice: 'am_fenrir', speed: 1.0,  pitch: 1,      who: 'adult' },
+  'esl-careful':            { voice: 'bf_emma',   speed: 0.85, pitch: 1,      who: 'adult ESL' },
+  'esl-plural-drop':        { voice: 'am_puck',   speed: 0.9,  pitch: 1,      who: 'adult ESL' },
+};
+const COACH_VOICE = 'af_heart';
+
+/** ffmpeg from the venv's imageio-ffmpeg; needed only when a reader is pitched. */
+function ffmpegPath() {
+  const r = spawnSync(pythonBin, ['-c', 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())'], { encoding: 'utf8' });
+  if (r.status !== 0) {
+    throw new Error('Pitched reader voices need ffmpeg: .venv/bin/pip install imageio-ffmpeg\n' + (r.stderr || ''));
+  }
+  return r.stdout.trim();
+}
+
+/** Raise pitch by `ratio` while keeping the clip's duration (and so its word timings). */
+function pitchShift(ff, file, ratio) {
+  const tmp = file + '.pitch.wav';
+  const af = `asetrate=${EXPECTED_SAMPLE_RATE}*${ratio},aresample=${EXPECTED_SAMPLE_RATE},atempo=${(1 / ratio).toFixed(6)}`;
+  const r = spawnSync(ff, ['-hide_banner', '-loglevel', 'error', '-y', '-i', file, '-af', af, '-ac', '1', '-c:a', 'pcm_s16le', tmp], { encoding: 'utf8' });
+  if (r.status !== 0) throw new Error(`pitch shift failed for ${file}: ${r.stderr}`);
+  renameSync(tmp, file);
+}
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
 
@@ -251,18 +294,39 @@ async function main() {
     `max ${PHRASE_MAX_WORDS} words/phrase).`
   );
   console.log(
-    `Rendering ONE UTTERANCE PER PHRASE with Kokoro-82M voice "${opts.voice}" at speed ${opts.speed}.`
+    `Rendering ONE UTTERANCE PER PHRASE with Kokoro-82M, one voice per reader (never the coach's ${COACH_VOICE}).`
   );
 
   mkdirSync(outDir, { recursive: true });
 
-  const report = await runSynth({
-    phrases: phrases.map((p) => ({ id: p.id, text: p.text })),
-    outDir,
-    voice: opts.voice,
-    speed: opts.speed,
-    ext: EXT,
-  });
+  // One synth call per reader voice; results merged into one report.
+  const groups = new Map();
+  for (const p of phrases) {
+    const r = READERS[p.sessionId];
+    if (!r) throw new Error(`no reader voice for session "${p.sessionId}" -- add it to READERS`);
+    if (r.voice === COACH_VOICE) throw new Error(`session "${p.sessionId}" uses the coach's voice (${COACH_VOICE})`);
+    const key = `${r.voice}|${r.speed}|${r.pitch}`;
+    if (!groups.has(key)) groups.set(key, { r, items: [] });
+    groups.get(key).items.push(p);
+  }
+  const report = { clips: [], failures: [] };
+  let ff = null;
+  for (const { r, items } of groups.values()) {
+    console.log(`  ${r.who.padEnd(10)} ${r.voice} @ ${r.speed}${r.pitch !== 1 ? `, pitch x${r.pitch}` : ''}: ${items.length} phrases`);
+    const part = await runSynth({
+      phrases: items.map((p) => ({ id: p.id, text: p.text })),
+      outDir,
+      voice: r.voice,
+      speed: r.speed,
+      ext: EXT,
+    });
+    if (r.pitch !== 1) {
+      ff = ff || ffmpegPath();
+      for (const p of items) pitchShift(ff, path.join(outDir, `${p.id}.${EXT}`), r.pitch);
+    }
+    report.clips.push(...part.clips);
+    report.failures.push(...(part.failures || []));
+  }
 
   const removed = pruneOrphans(byId.keys());
 
